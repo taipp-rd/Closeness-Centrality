@@ -47,7 +47,20 @@ Lightning Networkでは:
 pip install psycopg2-binary pandas networkx
 ```
 
-### 基本的な使い方
+### PowerShell での実行方法
+
+**重要**: PowerShellでは、すべての引数を**ダブルクォーテーション**で囲む必要があります。
+
+```powershell
+python ln_closeness_analysis.py --pg-host "localhost" --pg-port 5432 --pg-db "lightning_network" --pg-user "readonly" --pg-pass "your_password" --target-node "02abc123...def456" --topk 20 --combo-k 3 --combo-top 5
+```
+
+**注意事項**:
+- `<` と `>` は使用しないでください（PowerShellの予約文字）
+- `[` と `]` は使用しないでください（配列構文として解釈される）
+- パスワードに特殊文字が含まれる場合は必ずダブルクォーテーションで囲む
+
+### Unix/Linux/macOS での実行方法
 
 ```bash
 python ln_closeness_analysis.py \
@@ -67,20 +80,11 @@ python ln_closeness_analysis.py \
 --combo-top # 表示する組み合わせの数 (デフォルト: 5)
 ```
 
-### 実行例
+### 実際の実行例
 
-```bash
-# トップ30の単一チャネルと、4チャネルの組み合わせ5つを分析
-python ln_closeness_analysis.py \
-    --pg-host localhost \
-    --pg-port 5432 \
-    --pg-db ln \
-    --pg-user readonly \
-    --pg-pass 'secret' \
-    --target-node 02abc123...def456 \
-    --topk 30 \
-    --combo-k 4 \
-    --combo-top 5
+```powershell
+# PowerShell の例
+python ln_closeness_analysis.py --pg-host "lightning-graph-db.c7kw0quwamx3.ap-northeast-1.rds.amazonaws.com" --pg-port 19688 --pg-db "graph" --pg-user "mikura" --pg-pass "#w!zLVhwNzzz4!r" --target-node "03f5dc9f57c6c047938494ced134a485b1be5a134a6361bc5e33c2221bd9313d14" --topk 30 --combo-k 4 --combo-top 5
 ```
 
 ## 📤 出力
@@ -88,13 +92,21 @@ python ln_closeness_analysis.py \
 ### コンソール出力
 
 ```
+[INFO] Fetching latest open channels from database...
+[INFO] Open channel records fetched: 75373
+[INFO] Fetching latest node aliases...
+[INFO] Node aliases fetched: 8307
+[INFO] Building directed graph with bidirectional channels...
+[INFO] Nodes with non-zero capacity: 8500
+[INFO] Graph: 8500 nodes, 68620 directed edges
+
 ======================================================================
   Current Outgoing Closeness Centrality
   (Measures routing capability: how easily node can send payments)
 ======================================================================
-Node:     MyLightningNode
-Node ID:  02abc123...def456
-Closeness: 0.458234
+Node:     bakamoto
+Node ID:  03f5dc9f57c6c047938494ced134a485b1be5a134a6361bc5e33c2221bd9313d14
+Closeness: 0.353823
 
 ======================================================================
   Top 20 Single-Channel Openings
@@ -102,9 +114,9 @@ Closeness: 0.458234
 
 Rank  Alias                Node ID             New CC      Δ Absolute  Δ %       
 ----------------------------------------------------------------------------------
-1     ACINQ                03864e...f8ab       0.465123    0.006889    +1.50%
-2     LNBig.com            02fd3a...9bc2       0.464821    0.006587    +1.44%
-3     Bitfinex             02d96e...a8f3       0.463912    0.005678    +1.24%
+1     ACINQ                03864e...f8ab       0.361245    0.007422    +2.10%
+2     LNBig.com            02fd3a...9bc2       0.360891    0.007068    +2.00%
+3     Bitfinex             02d96e...a8f3       0.359982    0.006159    +1.74%
 ...
 
 ✅ Saved to: top_single_recommendations.csv
@@ -115,11 +127,11 @@ Rank  Alias                Node ID             New CC      Δ Absolute  Δ %
 
 #1
   Nodes:  ACINQ, LNBig.com, Bitfinex
-  New CC: 0.472456  |  Δ: 0.014222  |  +3.10%
+  New CC: 0.372456  |  Δ: 0.018633  |  +5.27%
 
 #2
   Nodes:  ACINQ, LNBig.com, Kraken
-  New CC: 0.471823  |  Δ: 0.013589  |  +2.97%
+  New CC: 0.371823  |  Δ: 0.018000  |  +5.09%
 ...
 
 ✅ Saved to: top_combo_recommendations.csv
@@ -138,23 +150,34 @@ Rank  Alias                Node ID             New CC      Δ Absolute  Δ %
 
 1. **channel_update** - チャネルの更新情報
    - `chan_id`, `advertising_nodeid`, `connecting_nodeid`
-   - `capacity_sat`, `rp_disabled`, `rp_last_update`
+   - `capacity_sat`, `rp_disabled`
+   - `timestamp` (integer: Unix timestamp)
+   - `rp_last_update` (integer: Unix timestamp)
 
 2. **closed_channel** - 閉じられたチャネル
    - `chan_id`
 
 3. **node_announcement** - ノード情報
    - `node_id`, `alias`
+   - `timestamp` (integer: Unix timestamp)
+
+**重要**: `timestamp`フィールドは**integer型**（Unix timestamp）です。
 
 ### アルゴリズム
 
 1. **データ取得**
-   - `DISTINCT ON (chan_id, advertising_nodeid)` で各方向の最新レコード
-   - 閉じられたチャネルと容量ゼロのチャネルを除外
+   ```sql
+   -- 各方向の最新レコードを取得
+   SELECT DISTINCT ON (chan_id, advertising_nodeid) ...
+   
+   -- timestampはinteger型なのでCOALESCEの型変換は不要
+   SELECT DISTINCT ON (node_id) ... ORDER BY timestamp DESC
+   ```
 
 2. **グラフ構築**
    - 有向グラフとして構築
    - 双方向チャネルを適切に表現
+   - 容量ゼロのノードを除外
 
 3. **近接中心性計算**
    ```python
@@ -171,13 +194,13 @@ Rank  Alias                Node ID             New CC      Δ Absolute  Δ %
 ### ルーティングノードの最適化
 
 ```
-現状: 近接中心性 = 0.425
+現状: 近接中心性 = 0.353823
 
 単一チャネル推奨:
-  ACINQ とのチャネル → +1.8% 改善
+  ACINQ とのチャネル → +2.10% 改善
 
 組み合わせ推奨:
-  ACINQ + LNBig + Bitfinex → +4.2% 改善
+  ACINQ + LNBig + Bitfinex → +5.27% 改善
 ```
 
 **解釈:**
@@ -190,6 +213,27 @@ Rank  Alias                Node ID             New CC      Δ Absolute  Δ %
 1. **トポロジー分析のみ** - このツールは容量や流動性を考慮しません
 2. **スナップショット時点** - Lightning Networkは常に変化するため、分析結果は実行時点のもの
 3. **総合的判断が必要** - 手数料、評判、安定性なども重要な考慮事項
+
+## 🐛 トラブルシューティング
+
+### エラー: `COALESCE types integer and timestamp cannot be matched`
+
+**原因**: `node_announcement.timestamp`フィールドがinteger型（Unix timestamp）なのに、timestamp型として扱おうとしている
+
+**解決済み**: 最新版では修正されています。`timestamp`をそのまま使用します。
+
+### エラー: PowerShellでコマンドが認識されない
+
+**原因**: PowerShellの特殊文字解釈
+
+**解決方法**: すべての引数をダブルクォーテーションで囲む
+```powershell
+# ❌ 間違い
+python ln_closeness_analysis.py --target-node <03f5dc...>
+
+# ✅ 正しい
+python ln_closeness_analysis.py --target-node "03f5dc..."
+```
 
 ## 📚 参考文献
 
