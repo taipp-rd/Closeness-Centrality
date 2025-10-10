@@ -14,18 +14,18 @@ Features
 - Evaluates all 3-channel combinations from Top 20 and outputs Top 5 combos
 - Prints both absolute and % improvement with node aliases
 
-Usage
-    python ln_closeness_analysis.py \
-        --pg-host HOST --pg-port 5432 --pg-db DBNAME \
-        --pg-user USER --pg-pass PASS \
-        --target-node <hex_node_id> \
-        [--topk 20] [--combo-k 3] [--combo-top 5]
+Usage (Unix/Linux/macOS):
+    python ln_closeness_analysis.py \\
+        --pg-host HOST --pg-port 5432 --pg-db DBNAME \\
+        --pg-user USER --pg-pass PASS \\
+        --target-node HEX_NODE_ID \\
+        --topk 20 --combo-k 3 --combo-top 5
 
-Example
-    python ln_closeness_analysis.py \
-        --pg-host localhost --pg-port 5432 --pg-db ln \
-        --pg-user readonly --pg-pass '***' \
-        --target-node 02abc...def
+Usage (Windows PowerShell):
+    python ln_closeness_analysis.py --pg-host "HOST" --pg-port 5432 --pg-db "DBNAME" --pg-user "USER" --pg-pass "PASS" --target-node "HEX_NODE_ID" --topk 20 --combo-k 3 --combo-top 5
+
+Example (PowerShell):
+    python ln_closeness_analysis.py --pg-host "lightning-graph-db.example.com" --pg-port 19688 --pg-db "graph" --pg-user "readonly" --pg-pass "your_password" --target-node "03f5dc9f57c6c047938494ced134a485b1be5a134a6361bc5e33c2221bd9313d14" --topk 20 --combo-k 3 --combo-top 5
 
 Theory & References
 - Lightning Network topology analysis: Rohrer et al. (2019) 
@@ -75,13 +75,14 @@ open_channel AS (
 SELECT * FROM open_channel;
 """
 
+# Fixed: timestamp is integer (Unix timestamp), not timestamp type
 ALIASES_SQL = r"""
 SELECT DISTINCT ON (na.node_id)
        na.node_id,
        na.alias,
-       COALESCE(na.timestamp, 'epoch'::timestamp) AS last_ts
+       na.timestamp AS last_ts
 FROM node_announcement na
-ORDER BY na.node_id, COALESCE(na.timestamp, 'epoch'::timestamp) DESC;
+ORDER BY na.node_id, na.timestamp DESC;
 """
 
 # --------------------------------------
@@ -347,9 +348,13 @@ def main():
         description="Lightning Network Closeness Centrality Analyzer",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
-  python ln_closeness_analysis.py --pg-host localhost --pg-port 5432 \\
-      --pg-db ln --pg-user readonly --pg-pass 'secret' \\
+Examples (PowerShell - use quotes for all arguments):
+  python ln_closeness_analysis.py --pg-host "localhost" --pg-port 5432 --pg-db "ln" --pg-user "readonly" --pg-pass "secret" --target-node "02abc...def" --topk 20 --combo-k 3 --combo-top 5
+
+Examples (Unix/Linux/macOS):
+  python ln_closeness_analysis.py \\
+      --pg-host localhost --pg-port 5432 --pg-db ln \\
+      --pg-user readonly --pg-pass 'secret' \\
       --target-node 02abc...def
 
 Theory:
