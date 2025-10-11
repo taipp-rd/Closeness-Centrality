@@ -2,26 +2,12 @@
 
 Lightning Networkのノードの**近接中心性(Closeness Centrality)**を分析し、最適なチャネル開設戦略を提案するツールです。
 
-## 🚀 パフォーマンス最適化
-
-このツールは**並列処理により3〜8倍高速化**されています：
-
 ### 最適化の特徴
 
 ✅ **マルチコア並列処理** - ThreadPoolExecutorによる全候補ノードの同時評価  
 ✅ **高速BFS実装** - NetworkXのcloseness_centrality関数の代わりに直接BFSで計算  
 ✅ **進捗表示** - リアルタイムで処理状況を確認可能  
-✅ **正確性維持** - オリジナルアルゴリズムと完全に同じ結果を保証  
 
-### パフォーマンス比較
-
-| グラフサイズ | 従来版 | 最適化版 | 高速化率 |
-|------------|--------|---------|---------|
-| 5,000ノード | 45分 | 8分 | 5.6x |
-| 10,000ノード | 3.5時間 | 28分 | 7.5x |
-| 15,000ノード | 8時間 | 1.2時間 | 6.7x |
-
-*4コアCPU（Intel i5）での実測値
 
 ### 並列処理の制御
 
@@ -146,8 +132,8 @@ python ln_closeness_analysis.py --pg-host "localhost" --pg-port 5432 --pg-db "ln
   Current Outgoing Closeness Centrality
   (Measures routing capability: how easily node can send payments)
 ======================================================================
-Node:     bakamoto
-Node ID:  03f5dc9f57c6c047938494ced134a485b1be5a134a6361bc5e33c2221bd9313d14
+Node:     
+Node ID:  03f5dc9f・・・
 Closeness: 0.353823
 
 ======================================================================
