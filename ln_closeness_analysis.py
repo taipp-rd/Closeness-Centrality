@@ -33,15 +33,6 @@ Usage (Windows PowerShell):
 Example (PowerShell):
     python ln_closeness_analysis.py --pg-host "lightning-graph-db.example.com" --pg-port 19688 --pg-db "graph" --pg-user "readonly" --pg-pass "your_password" --target-node "03f5dc9f57c6c047938494ced134a485b1be5a134a6361bc5e33c2221bd9313d14" --topk 20 --combo-k 3 --combo-top 5
 
-Theory & References
-- Lightning Network topology analysis: Rohrer et al. (2019) 
-  "Discharged Payment Channels" - https://arxiv.org/abs/1904.10253
-- Closeness Centrality: Freeman (1979) - measures how efficiently 
-  a node can reach all other nodes in the network
-- For OUTGOING closeness (routing capability), we compute shortest paths
-  FROM the target node TO all other nodes using the original directed graph.
-- NetworkX closeness_centrality computes INCOMING distances by default,
-  so for outgoing analysis we use the graph as-is (not reversed).
 """
 from __future__ import annotations
 import argparse
