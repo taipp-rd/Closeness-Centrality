@@ -9,7 +9,7 @@ Features
   - Excludes closed channels (closed_channel)
 - Builds a **directed** NetworkX graph with bidirectional edges
 - Drops nodes whose total adjacent capacity equals 0
-- Computes **outgoing closeness centrality** (G.reverse()) for routing capability
+- Computes **outgoing closeness centrality** for routing capability
 - Simulates opening channels and ranks Top 20 single-node additions
 - Evaluates all 3-channel combinations from Top 20 and outputs Top 5 combos
 - Prints both absolute and % improvement with node aliases
@@ -38,8 +38,10 @@ Theory & References
   "Discharged Payment Channels" - https://arxiv.org/abs/1904.10253
 - Closeness Centrality: Freeman (1979) - measures how efficiently 
   a node can reach all other nodes in the network
-- NetworkX closeness_centrality uses INCOMING distances by default;
-  for routing analysis we use OUTGOING distances via G.reverse()
+- For OUTGOING closeness (routing capability), we compute shortest paths
+  FROM the target node TO all other nodes using the original directed graph.
+- NetworkX closeness_centrality computes INCOMING distances by default,
+  so for outgoing analysis we use the graph as-is (not reversed).
 """
 from __future__ import annotations
 import argparse
@@ -199,8 +201,11 @@ def compute_closeness_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True) 
     IMPORTANT: For Lightning Network routing analysis, we measure OUTGOING 
     closeness (how easily the node can send payments to others).
     
-    NetworkX closeness_centrality computes INCOMING distances by default.
-    To get OUTGOING distances, we reverse the graph.
+    CORRECTED LOGIC:
+    - NetworkX shortest path algorithms compute paths FROM the source node
+    - For OUTGOING closeness, we want paths FROM target node TO others
+    - Therefore, we use the original graph G (not G.reverse())
+    - G.reverse() would give us INCOMING closeness (paths TO target FROM others)
     
     Args:
         G: Directed graph
@@ -218,11 +223,13 @@ def compute_closeness_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True) 
     if node not in G:
         return 0.0
     
-    # For outgoing closeness (routing capability), use reversed graph
-    graph_to_use = G.reverse() if use_outgoing else G
+    # CORRECTED: For outgoing closeness (routing capability), use the original graph
+    # For incoming closeness, use the reversed graph
+    graph_to_use = G if use_outgoing else G.reverse()
     
     try:
         # Direct BFS computation (faster than closeness_centrality)
+        # This computes shortest paths FROM 'node' TO all reachable nodes in graph_to_use
         lengths = nx.single_source_shortest_path_length(graph_to_use, node)
         n = len(graph_to_use)
         
