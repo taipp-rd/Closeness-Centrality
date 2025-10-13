@@ -48,7 +48,23 @@ Lightning Networkでは:
 - Lightning Networkを**有向グラフ**として扱います
 - **Outgoing Closeness Centrality**（外向き近接中心性）を測定
   - 自ノードから他のノードへ支払いを送信する能力を評価
-  - NetworkXでは`G.reverse()`を使用して正しく計算
+  - **重要**: 外向き近接中心性を計算するため、元のグラフGをそのまま使用します
+  - NetworkXの`single_source_shortest_path_length(G, node)`は、指定ノードからの最短経路を計算するため、外向き距離を正しく測定できます
+
+### ⚠️ 重要な修正点（2025年10月13日）
+
+**以前の実装の誤り:**
+- 外向き近接中心性の計算で`G.reverse()`を使用していました
+- これは逆効果で、実際には**内向き近接中心性**を計算していました
+
+**修正後の正しい実装:**
+- 外向き近接中心性: `G`（元のグラフ）をそのまま使用
+- 内向き近接中心性: `G.reverse()`（反転グラフ）を使用
+
+**理論的根拠:**
+- `single_source_shortest_path_length(G, v)`は、ノードvから他のノードへの距離を計算
+- したがって、外向き距離を測定するには元のグラフGを使用すべき
+- `G.reverse()`を使用すると、エッジの向きが逆転し、内向き距離を測定することになる
 
 ### 学術的根拠
 
@@ -109,7 +125,7 @@ python ln_closeness_analysis.py \
 
 ```powershell
 # PowerShell の例（全CPU使用）
-python ln_closeness_analysis.py --pg-host "lightning-graph-db.c7kw0quwamx3.ap-northeast-1.rds.amazonaws.com" --pg-port 19688 --pg-db "graph" --pg-user "mikura" --pg-pass "#w!zLVhwNzzz4!r" --target-node "03f5dc9f57c6c047938494ced134a485b1be5a134a6361bc5e33c2221bd9313d14" --topk 30 --combo-k 4 --combo-top 5 --n-jobs -1
+python ln_closeness_analysis.py --pg-host "lightning-graph-db.example.com" --pg-port 19688 --pg-db "graph" --pg-user "readonly" --pg-pass "your_password" --target-node "03f5dc9f57c6c047938494ced134a485b1be5a134a6361bc5e33c2221bd9313d14" --topk 30 --combo-k 4 --combo-top 5 --n-jobs -1
 
 # CPU負荷を抑える場合（4コアのみ使用）
 python ln_closeness_analysis.py --pg-host "localhost" --pg-port 5432 --pg-db "ln" --pg-user "readonly" --pg-pass "pass" --target-node "02abc..." --n-jobs 4
@@ -200,7 +216,7 @@ with ThreadPoolExecutor(max_workers=n_workers) as executor:
         result = future.result()  # 並列処理
 ```
 
-#### 2. 直接BFS計算
+#### 2. 直接BFS計算と正しいグラフの使用
 
 NetworkXの`closeness_centrality()`関数の代わりに、`single_source_shortest_path_length()`を直接使用：
 
@@ -210,10 +226,15 @@ NetworkXの`closeness_centrality()`関数の代わりに、`single_source_shorte
 - メモリ効率の向上
 
 ```python
-def compute_closeness_fast(G, node):
-    lengths = nx.single_source_shortest_path_length(G.reverse(), node)
+def compute_closeness_fast(G, node, use_outgoing=True):
+    # 重要: 外向き近接中心性には元のグラフGを使用
+    graph_to_use = G if use_outgoing else G.reverse()
+    
+    # ノードnodeからの最短経路を計算
+    lengths = nx.single_source_shortest_path_length(graph_to_use, node)
     total_distance = sum(lengths.values())
     n_reachable = len(lengths) - 1
+    
     # Wasserman-Faust正規化
     closeness = n_reachable / total_distance
     s = n_reachable / (len(G) - 1)
@@ -247,7 +268,7 @@ if completed % (total // 20) == 0:
 
 **重要**: `timestamp`フィールドは**integer型**（Unix timestamp）です。
 
-### グラフ構築
+### グラフ構築と近接中心性計算
 
 1. **データ取得**
    ```sql
@@ -263,10 +284,11 @@ if completed % (total // 20) == 0:
    - 双方向チャネルを適切に表現
    - 容量ゼロのノードを除外
 
-3. **近接中心性計算**
+3. **近接中心性計算（修正済み）**
    ```python
-   # Outgoing Closeness Centrality
-   closeness = compute_closeness_fast(G, node, use_outgoing=True)
+   # 外向き近接中心性（正しい実装）
+   # 元のグラフGを使用して、targetノードから他のノードへの距離を測定
+   closeness = compute_closeness_fast(G, target, use_outgoing=True)
    ```
 
 4. **シミュレーション**
@@ -373,6 +395,7 @@ python ln_closeness_analysis.py ... --n-jobs 2
 - ✅ マルチスレッド並列処理
 - ✅ 直接BFS計算
 - ✅ プログレス表示
+- ✅ 正しい外向き近接中心性の計算
 
 ### 超大規模グラフ向け（将来の拡張）
 - 🔄 **Harmonic Centrality** - 非連結グラフでより安定
@@ -404,5 +427,5 @@ taipp-rd
 
 ---
 
-**最終更新**: 2025年10月11日  
-**バージョン**: 2.0（並列処理最適化版）
+**最終更新**: 2025年10月13日  
+**バージョン**: 2.1（外向き近接中心性計算の修正版）
