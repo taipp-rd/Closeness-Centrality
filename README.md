@@ -5,7 +5,7 @@ Lightning Networkのノードの**近接中心性(Closeness Centrality)**を分�
 ### 最適化の特徴
 
 ✅ **マルチコア並列処理** - ThreadPoolExecutorによる全候補ノードの同時評価  
-✅ **高速BFS実装** - NetworkXのcloseness_centrality関数の代わりに直接BFSで計算  
+✅ **BFS実装** - NetworkXのcloseness_centrality関数の代わりに直接BFSで計算  
 ✅ **進捗表示** - リアルタイムで処理状況を確認可能  
 
 
