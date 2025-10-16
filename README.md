@@ -401,7 +401,6 @@ python ln_closeness_analysis.py ... --n-jobs 2
 - 🔄 **Harmonic Centrality** - 非連結グラフでより安定
 - 🔄 **ピボットサンプリング** - 全ノードではなくサンプルで近似
 - 🔄 **Top-k最適化** - 上位ノードのみに特化した計算
-- 🔄 **分散処理** - MPI/Sparkによる複数マシン並列化
 
 これらは必要に応じて実装可能です。
 
