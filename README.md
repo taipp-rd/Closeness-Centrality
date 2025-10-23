@@ -22,13 +22,13 @@ python ln_closeness_analysis.py ... --n-jobs 4
 python ln_closeness_analysis.py ... --n-jobs 1
 ```
 
-## 📊 機能
+##  機能
 
 1. **現在の近接中心性を測定** - 指定したノードの支払い送信効率を評価
 2. **最適な単一チャネルを提案** - 近接中心性を最も改善するノードをトップ20でランキング
 3. **最適な組み合わせを提案** - 3つのチャネルの最適な組み合わせトップ5を提案
 
-## 🔬 理論的背景
+##  理論的背景
 
 ### 近接中心性とは
 
@@ -78,7 +78,7 @@ Lightning Networkでは:
 - **Brandes & Pich (2007)**: "Centrality Estimation in Large Networks"
   - サンプリングベースの高速化手法
 
-## 🚀 使い方
+##  使い方
 
 ### 必要な環境
 
@@ -131,7 +131,7 @@ python ln_closeness_analysis.py --pg-host "lightning-graph-db.example.com" --pg-
 python ln_closeness_analysis.py --pg-host "localhost" --pg-port 5432 --pg-db "ln" --pg-user "readonly" --pg-pass "pass" --target-node "02abc..." --n-jobs 4
 ```
 
-## 📤 出力
+##  出力
 
 ### コンソール出力
 
@@ -196,7 +196,7 @@ Analysis complete!
 - `top_single_recommendations.csv` - 単一チャネル推奨
 - `top_combo_recommendations.csv` - 組み合わせ推奨
 
-## 🔍 技術的詳細
+##  技術的詳細
 
 ### アルゴリズムの最適化
 
@@ -296,7 +296,7 @@ if completed % (total // 20) == 0:
    - 並列処理で全候補を同時評価
    - 改善度でランキング
 
-## 📊 実用例
+##  実用例
 
 ### ルーティングノードの最適化
 
@@ -344,7 +344,7 @@ python ln_closeness_analysis.py \
 3. **総合的判断が必要** - 手数料、評判、安定性なども重要な考慮事項
 4. **CPU負荷** - 並列処理により一時的に高いCPU使用率となります
 
-## 🐛 トラブルシューティング
+##  トラブルシューティング
 
 ### エラー: `COALESCE types integer and timestamp cannot be matched`
 
@@ -404,7 +404,7 @@ python ln_closeness_analysis.py ... --n-jobs 2
 
 これらは必要に応じて実装可能です。
 
-## 📚 参考文献
+##  参考文献
 
 1. Rohrer, E., Malliaris, J., & Tschorsch, F. (2019). Discharged Payment Channels: Quantifying the Lightning Network's Resilience to Topology-Based Attacks. arXiv:1904.10253.
 
@@ -415,14 +415,7 @@ python ln_closeness_analysis.py ... --n-jobs 2
 4. Cohen, E., et al. (2014). Computing Classic Closeness Centrality, at Scale. COSN '14.
 
 5. NetworkX Documentation: [Closeness Centrality](https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.centrality.closeness_centrality.html)
-
-## 📄 ライセンス
-
-MIT License
-
-## 👨‍💻 作者
-
-taipp-rd
+   
 
 ---
 
