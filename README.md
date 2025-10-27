@@ -1,417 +1,304 @@
 # Lightning Network Closeness Centrality Analyzer
 
-Lightning Networkのノードの**近接中心性(Closeness Centrality)**を分析し、最適なチャネル開設戦略を提案するツールです。
+Lightning Networkのノードの**近接中心性(Closeness Centrality)**と**調和中心性(Harmonic Centrality)**を分析し、最適なチャネル開設戦略を提案する高度な分析ツールです。
 
-### 最適化の特徴
+## 🚀 主要機能
 
-・ **マルチコア並列処理** - ThreadPoolExecutorによる全候補ノードの同時評価  
-・ **BFS実装** - NetworkXのcloseness_centrality関数の代わりに直接BFSで計算  
-・ **進捗表示** - リアルタイムで処理状況を確認可能  
+### 1. 複数の中心性指標
+- **近接中心性 (Closeness Centrality)**: ルーティング効率を測定
+- **調和中心性 (Harmonic Centrality)**: 非連結グラフでより安定した指標
+- **容量重み付き中心性**: チャネル容量を考慮した構造分析（実験的機能）
 
+### 2. 最適化アルゴリズム
+- **貪欲法 (Greedy Algorithm)**: 高速で良好な近似解を提供
+- **網羅的探索 (Exhaustive Search)**: 最適解を保証（小規模な場合）
+- **比較モード**: 両手法の結果を比較
 
-### 並列処理の制御
+### 3. パフォーマンス最適化
+- **マルチコア並列処理**: ThreadPoolExecutorによる高速化
+- **進捗表示**: リアルタイムで処理状況を確認
+- **メモリ効率**: 大規模グラフにも対応
 
-```bash
-# 全CPUコアを使用（デフォルト）
-python ln_closeness_analysis.py ... --n-jobs -1
+## 📊 理論的背景
 
-# 4コアのみ使用（推奨：CPU負荷を抑える場合）
-python ln_closeness_analysis.py ... --n-jobs 4
-
-# シングルスレッド（デバッグ用）
-python ln_closeness_analysis.py ... --n-jobs 1
-```
-
-##  機能
-
-1. **現在の近接中心性を測定** - 指定したノードの支払い送信効率を評価
-2. **最適な単一チャネルを提案** - 近接中心性を最も改善するノードをトップ20でランキング
-3. **最適な組み合わせを提案** - 3つのチャネルの最適な組み合わせトップ5を提案
-
-##  理論的背景
-
-### 近接中心性とは
-
-近接中心性は、ノードから他の全てのノードへの最短経路距離の逆数として定義されます：
-
+### 近接中心性 (Freeman 1979)
 ```
 CC(v) = (n-1) / Σ d(v,u)
 ```
+- ノードから他の全ノードへの最短経路距離の逆数
+- Lightning Networkでは支払い送信効率を表す
 
-Lightning Networkでは:
-- **高い近接中心性** = 少ないホップ数で支払いを送信可能
-- **低い近接中心性** = 支払いに多くの中継が必要
+### 調和中心性 (Marchiori & Latora 2000)
+```
+HC(v) = Σ(u≠v) [1/d(v,u)] / (n-1)
+```
+- 非連結グラフでも安定（1/∞ = 0）
+- 動的トポロジーに適している
+- 連結成分では近接中心性と高相関（ρ > 0.95）
 
-### 有向グラフと方向性
+### 容量重み付き中心性（NEW - v3.0）
+```
+weight = 1 / (1 + log(1 + capacity))
+```
+- Opsahl et al. (2010)の重み付きネットワーク理論に基づく
+- 大容量チャネル = 短い「効果的距離」
+- **注意**: 実際の残高分布ではなく構造的重要性を示す
 
-このツールは:
-- Lightning Networkを**有向グラフ**として扱います
-- **Outgoing Closeness Centrality**（外向き近接中心性）を測定
-  - 自ノードから他のノードへ支払いを送信する能力を評価
-  - **重要**: 外向き近接中心性を計算するため、元のグラフGをそのまま使用します
-  - NetworkXの`single_source_shortest_path_length(G, node)`は、指定ノードからの最短経路を計算するため、外向き距離を正しく測定できます
-
-### ⚠️ 重要な修正点
-
-**以前の実装の誤り:**
-- 外向き近接中心性の計算で`G.reverse()`を使用していました
-- これは逆効果で、実際には**内向き近接中心性**を計算していました
-
-**修正後の正しい実装:**
-- 外向き近接中心性: `G`（元のグラフ）をそのまま使用
-- 内向き近接中心性: `G.reverse()`（反転グラフ）を使用
-
-**理論的根拠:**
-- `single_source_shortest_path_length(G, v)`は、ノードvから他のノードへの距離を計算
-- したがって、外向き距離を測定するには元のグラフGを使用すべき
-- `G.reverse()`を使用すると、エッジの向きが逆転し、内向き距離を測定することになる
-
-### 学術的根拠
-
-- **Rohrer et al. (2019)**: ["Discharged Payment Channels"](https://arxiv.org/abs/1904.10253)
-  - Lightning Networkのトポロジー分析
-  - 中心性指標とネットワーク効率の関係を実証
-
-- **Freeman (1979)**: "Centrality in networks: I. Conceptual clarification"
-  - 近接中心性の数学的定義
-
-- **Brandes & Pich (2007)**: "Centrality Estimation in Large Networks"
-  - サンプリングベースの高速化手法
-
-##  使い方
+## 🛠 使い方
 
 ### 必要な環境
 
 ```bash
-pip install psycopg2-binary pandas networkx
+pip install psycopg2-binary pandas networkx numpy
 ```
 
-### PowerShell での実行方法
-
-**重要**: PowerShellでは、すべての引数を**ダブルクォーテーション**で囲む必要があります。
-
-```powershell
-python ln_closeness_analysis.py --pg-host "localhost" --pg-port 5432 --pg-db "lightning_network" --pg-user "readonly" --pg-pass "your_password" --target-node "02abc123...def456" --topk 20 --combo-k 3 --combo-top 5 --n-jobs -1
-```
-
-**注意事項**:
-- `<` と `>` は使用しないでください（PowerShellの予約文字）
-- `[` と `]` は使用しないでください（配列構文として解釈される）
-- パスワードに特殊文字が含まれる場合は必ずダブルクォーテーションで囲む
-
-### Unix/Linux/macOS での実行方法
+### 基本的な実行
 
 ```bash
+# 貪欲法によるトポロジー分析（推奨）
 python ln_closeness_analysis.py \
-    --pg-host localhost \
-    --pg-port 5432 \
-    --pg-db lightning_network \
-    --pg-user readonly \
-    --pg-pass 'your_password' \
-    --target-node 02abc123...def456 \
-    --n-jobs -1
+    --pg-host localhost --pg-port 5432 \
+    --pg-db lightning_network --pg-user readonly \
+    --pg-pass 'password' \
+    --target-node 02abc123... \
+    --method greedy
+
+# 容量重み付き分析（実験的）
+python ln_closeness_analysis.py \
+    --pg-host localhost --pg-port 5432 \
+    --pg-db lightning_network --pg-user readonly \
+    --pg-pass 'password' \
+    --target-node 02abc123... \
+    --use-capacity \
+    --method greedy
+
+# 両手法の比較
+python ln_closeness_analysis.py \
+    ... \
+    --method both
 ```
 
-### オプション
+### オプション詳細
 
-```bash
---topk      # 単一チャネル推奨のトップN (デフォルト: 20)
---combo-k   # 組み合わせのサイズ (デフォルト: 3)
---combo-top # 表示する組み合わせの数 (デフォルト: 5)
---n-jobs    # 並列処理のワーカー数 (-1で全CPU使用、デフォルト: -1)
-```
+| オプション | デフォルト | 説明 |
+|-----------|-----------|------|
+| `--topk` | 20 | 単一チャネル推奨のトップN |
+| `--combo-k` | 3 | 組み合わせチャネル数 |
+| `--combo-top` | 5 | 表示する組み合わせ数 |
+| `--n-jobs` | -1 | 並列ワーカー数（-1で全CPU使用） |
+| `--method` | greedy | 最適化手法（greedy/exhaustive/both） |
+| `--use-capacity` | False | 容量重み付き中心性を使用 |
+| `--sort-by` | closeness | ソート基準（closeness/harmonic） |
 
-### 実際の実行例
-
-```powershell
-# PowerShell の例（全CPU使用）
-python ln_closeness_analysis.py --pg-host "lightning-graph-db.example.com" --pg-port 19688 --pg-db "graph" --pg-user "readonly" --pg-pass "your_password" --target-node "03f5dc9f57c6c047938494ced134a485b1be5a134a6361bc5e33c2221bd9313d14" --topk 30 --combo-k 4 --combo-top 5 --n-jobs -1
-
-# CPU負荷を抑える場合（4コアのみ使用）
-python ln_closeness_analysis.py --pg-host "localhost" --pg-port 5432 --pg-db "ln" --pg-user "readonly" --pg-pass "pass" --target-node "02abc..." --n-jobs 4
-```
-
-##  出力
+## 📈 出力例
 
 ### コンソール出力
 
 ```
-[INFO] Fetching latest open channels from database...
-[INFO] Open channel records fetched: 75373
-[INFO] Fetching latest node aliases...
-[INFO] Node aliases fetched: 8307
-[INFO] Building directed graph with bidirectional channels...
-[INFO] Nodes with non-zero capacity: 8500
-[INFO] Graph: 8500 nodes, 68620 directed edges
+======================================================================
+  Network Connectivity Analysis
+======================================================================
+Strongly connected: False
+Strong components: 1523
+Largest component coverage: 89.45%
+Weak components: 12
 
 ======================================================================
-  Current Outgoing Closeness Centrality
-  (Measures routing capability: how easily node can send payments)
+  Current Centrality Values
 ======================================================================
-Node:     
-Node ID:  03f5dc9f・・・
-Closeness: 0.353823
-
-======================================================================
-  Top 20 Single-Channel Openings
-======================================================================
-[INFO] Evaluating 8479 candidate nodes in parallel...
-[INFO] Using 8 parallel workers
-[PROGRESS] 8479/8479 candidates evaluated (100.0%)
-
-Rank  Alias                Node ID             New CC      Δ Absolute  Δ %       
-----------------------------------------------------------------------------------
-1     ACINQ                03864e...f8ab       0.361245    0.007422    +2.10%
-2     LNBig.com            02fd3a...9bc2       0.360891    0.007068    +2.00%
-3     Bitfinex             02d96e...a8f3       0.359982    0.006159    +1.74%
-...
-
-✅ Saved to: top_single_recommendations.csv
+Node: ACINQ
+Closeness Centrality:  0.353823
+Harmonic Centrality:   0.412567
 
 ======================================================================
-  Best 3-Channel Combinations (Top 5)
+  GREEDY RESULT (k=3)
 ======================================================================
-[INFO] Evaluating 1140 combinations of 3 channels in parallel...
-[INFO] Using 8 parallel workers
-[PROGRESS] 1140/1140 combinations evaluated (100.0%)
+[GREEDY] Iteration 1/3: Selected: LNBig.com
+[GREEDY] Marginal: CC +2.10%, HC +2.34%
+[GREEDY] Total: CC 0.361245 (+2.10%), HC 0.421983 (+2.34%)
 
-#1
-  Nodes:  ACINQ, LNBig.com, Bitfinex
-  New CC: 0.372456  |  Δ: 0.018633  |  +5.27%
+[GREEDY] Iteration 2/3: Selected: Bitfinex
+[GREEDY] Marginal: CC +1.68%, HC +1.85%
+[GREEDY] Total: CC 0.367183 (+3.78%), HC 0.429617 (+4.19%)
 
-#2
-  Nodes:  ACINQ, LNBig.com, Kraken
-  New CC: 0.371823  |  Δ: 0.018000  |  +5.09%
-...
+[GREEDY] Iteration 3/3: Selected: Kraken
+[GREEDY] Marginal: CC +1.23%, HC +1.41%
+[GREEDY] Total: CC 0.371698 (+5.01%), HC 0.435433 (+5.60%)
 
-✅ Saved to: top_combo_recommendations.csv
+Final centrality:
+  CC: 0.371698 (+5.01%)
+  HC: 0.435433 (+5.60%)
+Computation time: 12.34s
 
 ======================================================================
-Analysis complete!
+  COMPARISON
 ======================================================================
+Greedy time:     12.34s
+Exhaustive time: 156.78s
+Speedup:         12.7x
+
+Result: ✅ IDENTICAL (Greedy found optimal solution)
 ```
 
-### CSVファイル
+### CSVファイル出力
 
-- `top_single_recommendations.csv` - 単一チャネル推奨
-- `top_combo_recommendations.csv` - 組み合わせ推奨
+- `centrality_recommendations.csv` - 単一チャネル推奨結果
+- `submodularity_violations.csv` - 劣モジュラ性違反の詳細（検証時）
+- `marginal_gains.csv` - 限界効用データ（統計分析用）
 
-##  技術的詳細
+## 🔬 アルゴリズムの詳細
 
-### アルゴリズムの最適化
-
-#### 1. 並列BFS処理
-
-**従来版（シングルスレッド）:**
-```python
-for candidate in candidates:
-    new_cc = compute_closeness(G, target)  # 順次処理
-```
-
-**最適化版（マルチスレッド）:**
-```python
-with ThreadPoolExecutor(max_workers=n_workers) as executor:
-    futures = {executor.submit(evaluate_candidate, c): c for c in candidates}
-    for future in as_completed(futures):
-        result = future.result()  # 並列処理
-```
-
-#### 2. 直接BFS計算と正しいグラフの使用
-
-NetworkXの`closeness_centrality()`関数の代わりに、`single_source_shortest_path_length()`を直接使用：
-
-**利点:**
-- 関数呼び出しのオーバーヘッド削減
-- 不要な計算の省略
-- メモリ効率の向上
+### 1. 貪欲アルゴリズム
 
 ```python
-def compute_closeness_fast(G, node, use_outgoing=True):
-    # 重要: 外向き近接中心性には元のグラフGを使用
-    graph_to_use = G if use_outgoing else G.reverse()
-    
-    # ノードnodeからの最短経路を計算
-    lengths = nx.single_source_shortest_path_length(graph_to_use, node)
-    total_distance = sum(lengths.values())
-    n_reachable = len(lengths) - 1
-    
-    # Wasserman-Faust正規化
-    closeness = n_reachable / total_distance
-    s = n_reachable / (len(G) - 1)
-    return closeness * s
+for i = 1 to k:
+    best = argmax_{v ∉ S} f(S ∪ {v}) - f(S)
+    S = S ∪ {best}
 ```
 
-#### 3. プログレス表示
+- **複雑度**: O(k × n × (|V| + |E|))
+- **近似保証**: 劣モジュラ関数の場合 (1-1/e) ≈ 63%
+- **注意**: 近接中心性改善は必ずしも劣モジュラではない
 
-長時間実行時のユーザビリティ向上：
+### 2. 網羅的探索
+
+- **複雑度**: O(C(n,k) × (|V| + |E|))
+- **保証**: 最適解
+- **実用性**: k ≤ 3, n ≤ 20 程度まで
+
+### 3. 容量重み付き分析の理論
+
+**重み関数の設計**:
 ```python
-if completed % (total // 20) == 0:
-    print(f"[PROGRESS] {completed}/{total} ({progress:.1f}%)")
+weight = 1.0 / (1.0 + np.log1p(capacity))
 ```
 
-### データベーススキーマ
+- **対数スケーリング**: 容量の影響を適切に減衰
+- **`log1p`の使用**: `log(1 + x)`で数値的安定性を確保
+- **逆数変換**: 大容量 → 小重み → 短い効果的距離
 
-使用するテーブル:
+**理論的根拠**:
+- Opsahl et al. (2010): 重み付きネットワークにおけるノード中心性
+- 容量は支払い可能性の上限を示す構造的指標
+- 実際のルーティングでは残高分布（非公開）が重要
 
-1. **channel_update** - チャネルの更新情報
-   - `chan_id`, `advertising_nodeid`, `connecting_nodeid`
-   - `capacity_sat`, `rp_disabled`
-   - `timestamp` (integer: Unix timestamp)
-   - `rp_last_update` (integer: Unix timestamp)
+## ⚠️ 重要な注意事項
 
-2. **closed_channel** - 閉じられたチャネル
-   - `chan_id`
+### 1. 容量重み付き分析について
+- **容量 ≠ 実際の残高**: 容量は理論的上限であり、実際のルーティング能力とは異なります
+- **構造的重要性**: ネットワークトポロジーにおける位置の重要性を示します
+- **実運用**: プロダクション環境では確率ベースのパスファインディングを推奨
 
-3. **node_announcement** - ノード情報
-   - `node_id`, `alias`
-   - `timestamp` (integer: Unix timestamp)
+### 2. グラフの方向性（重要な修正）
+- **v2.1での修正**: 外向き近接中心性の計算が修正されました
+- **正しい実装**: `G`（元のグラフ）を使用して外向き距離を測定
+- **以前の誤り**: `G.reverse()`を使用していた（内向き距離を測定）
 
-**重要**: `timestamp`フィールドは**integer型**（Unix timestamp）です。
+### 3. 分析の限界
+- **スナップショット分析**: Lightning Networkは常に変化しています
+- **トポロジーのみ**: 手数料、評判、安定性は考慮されていません
+- **総合的判断**: 実際のチャネル開設には多角的な検討が必要です
 
-### グラフ構築と近接中心性計算
+## 🐛 トラブルシューティング
 
-1. **データ取得**
-   ```sql
-   -- 各方向の最新レコードを取得
-   SELECT DISTINCT ON (chan_id, advertising_nodeid) ...
-   
-   -- timestampはinteger型なのでCOALESCEの型変換は不要
-   SELECT DISTINCT ON (node_id) ... ORDER BY timestamp DESC
-   ```
+### PowerShellでの実行
 
-2. **グラフ構築**
-   - 有向グラフとして構築
-   - 双方向チャネルを適切に表現
-   - 容量ゼロのノードを除外
+PowerShellではすべての引数をダブルクォーテーションで囲む必要があります：
 
-3. **近接中心性計算（修正済み）**
-   ```python
-   # 外向き近接中心性（正しい実装）
-   # 元のグラフGを使用して、targetノードから他のノードへの距離を測定
-   closeness = compute_closeness_fast(G, target, use_outgoing=True)
-   ```
-
-4. **シミュレーション**
-   - 各候補ノードとのチャネル開設をシミュレート
-   - 並列処理で全候補を同時評価
-   - 改善度でランキング
-
-##  実用例
-
-### ルーティングノードの最適化
-
-```
-現状: 近接中心性 = 0.353823
-
-単一チャネル推奨:
-  ACINQ とのチャネル → +2.10% 改善
-
-組み合わせ推奨:
-  ACINQ + LNBig + Bitfinex → +5.27% 改善
-```
-
-**解釈:**
-- 改善度が高いノードは、ネットワークの中心に位置
-- 複数チャネルの組み合わせは相乗効果を生む
-- 実際の運用では容量やコストも考慮が必要
-
-### 大規模ネットワークでの使用
-
-**10,000ノード以上のネットワークの場合:**
-
-```bash
-# 推奨設定
-python ln_closeness_analysis.py \
-    ... \
-    --topk 30 \          # より多くの候補を評価
-    --combo-k 3 \        # 組み合わせサイズは3が最適
-    --combo-top 10 \     # 上位10組み合わせを表示
-    --n-jobs -1          # 全CPUを使用
-```
-
-**メモリ制約がある場合:**
-```bash
-# メモリ節約モード
---topk 15 \
---combo-k 2 \
---n-jobs 4
-```
-
-## ⚠️ 注意事項
-
-1. **トポロジー分析のみ** - このツールは容量や流動性を考慮しません
-2. **スナップショット時点** - Lightning Networkは常に変化するため、分析結果は実行時点のもの
-3. **総合的判断が必要** - 手数料、評判、安定性なども重要な考慮事項
-4. **CPU負荷** - 並列処理により一時的に高いCPU使用率となります
-
-##  トラブルシューティング
-
-### エラー: `COALESCE types integer and timestamp cannot be matched`
-
-**原因**: `node_announcement.timestamp`フィールドがinteger型（Unix timestamp）なのに、timestamp型として扱おうとしている
-
-**解決済み**: 最新版では修正されています。`timestamp`をそのまま使用します。
-
-### エラー: PowerShellでコマンドが認識されない
-
-**原因**: PowerShellの特殊文字解釈
-
-**解決方法**: すべての引数をダブルクォーテーションで囲む
 ```powershell
-# ❌ 間違い
-python ln_closeness_analysis.py --target-node <03f5dc...>
+# 正しい例
+python ln_closeness_analysis.py --target-node "02abc..."
 
-# ✅ 正しい
-python ln_closeness_analysis.py --target-node "03f5dc..."
+# 間違った例（エラーになる）
+python ln_closeness_analysis.py --target-node <02abc...>
 ```
 
-### 問題: 処理が遅い
+### メモリ不足
 
-**原因**: シングルスレッドで実行されている可能性
+大規模グラフで問題が発生する場合：
 
-**解決方法**: 並列処理を有効化
 ```bash
-# 全CPUコアを使用
-python ln_closeness_analysis.py ... --n-jobs -1
-
-# CPUコア数を確認
-import multiprocessing
-print(multiprocessing.cpu_count())  # 例: 8
-```
-
-### 問題: メモリ不足
-
-**原因**: 大規模グラフ + 高い並列度
-
-**解決方法**: 並列度を下げる
-```bash
-# 2コアのみ使用
+# ワーカー数を制限
 python ln_closeness_analysis.py ... --n-jobs 2
+
+# 評価対象を減らす
+python ln_closeness_analysis.py ... --topk 10 --combo-k 2
 ```
 
-##  さらなる最適化の可能性
+### 処理速度の最適化
 
-### 将来の拡張
-- 🔄 **Harmonic Centrality** - 非連結グラフでより安定
-- 🔄 **ピボットサンプリング** - 全ノードではなくサンプルで近似
-- 🔄 **Top-k最適化** - 上位ノードのみに特化した計算
+```bash
+# CPUコア数の確認
+python -c "import multiprocessing; print(multiprocessing.cpu_count())"
 
-これらは必要に応じて実装可能です。
+# 最適なワーカー数の設定（通常はCPUコア数-1）
+python ln_closeness_analysis.py ... --n-jobs 7  # 8コアCPUの場合
+```
 
-##  参考文献
+## 📊 データベーススキーマ
 
-1. Rohrer, E., Malliaris, J., & Tschorsch, F. (2019). Discharged Payment Channels: Quantifying the Lightning Network's Resilience to Topology-Based Attacks. arXiv:1904.10253.
+必要なテーブル構造：
 
-2. Freeman, L. C. (1979). Centrality in networks: I. Conceptual clarification. Social Networks, 1(3), 215-239.
+### channel_update
+- `chan_id` (bigint): チャネルID
+- `advertising_nodeid` (text): 広告ノードID
+- `connecting_nodeid` (text): 接続先ノードID
+- `capacity_sat` (bigint): チャネル容量（satoshi）
+- `rp_disabled` (boolean): 無効化フラグ
+- `timestamp` (integer): Unix timestamp
+- `rp_last_update` (integer): 最終更新時刻
 
-3. Brandes, U., & Pich, C. (2007). Centrality Estimation in Large Networks. International Journal of Bifurcation and Chaos, 17(07), 2303-2318.
+### closed_channel
+- `chan_id` (bigint): 閉じたチャネルID
 
-4. Cohen, E., et al. (2014). Computing Classic Closeness Centrality, at Scale. COSN '14.
+### node_announcement
+- `node_id` (text): ノードID
+- `alias` (text): ノードのエイリアス
+- `timestamp` (integer): Unix timestamp
 
-5. NetworkX Documentation: [Closeness Centrality](https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.centrality.closeness_centrality.html)
-   
+## 🔄 プロジェクトに含まれるその他のツール
+
+### submodularity_test.py
+
+劣モジュラ性を検証するツール：
+
+```bash
+python submodularity_test.py \
+    --pg-host HOST --pg-port 5432 \
+    --pg-db DBNAME --pg-user USER --pg-pass PASS \
+    --target-node NODE_ID \
+    --num-tests 100 \
+    --max-set-size 5
+```
+
+劣モジュラ性が成立する場合、貪欲法の理論的保証（63%近似）が得られます。
+
+## 📚 参考文献
+
+1. **Freeman, L. C. (1979)**. Centrality in networks: I. Conceptual clarification. *Social Networks*, 1(3), 215-239.
+
+2. **Marchiori, M., & Latora, V. (2000)**. Harmony in the small world. *Physica A*, 285(3-4), 539-546.
+
+3. **Opsahl, T., Agneessens, F., & Skvoretz, J. (2010)**. Node centrality in weighted networks: Generalizing degree and shortest paths. *Social Networks*, 32(3), 245-251.
+
+4. **Boldi, P., & Vigna, S. (2014)**. Axioms for centrality. *Internet Mathematics*, 10(3-4), 222-262.
+
+5. **Kempe, D., Kleinberg, J., & Tardos, É. (2003)**. Maximizing the spread of influence through a social network. *Proceedings of KDD*, 137-146.
+
+6. **Rohrer, E., Malliaris, J., & Tschorsch, F. (2019)**. Discharged payment channels: Quantifying the Lightning Network's resilience to topology-based attacks. *arXiv:1904.10253*.
+
+7. **Nemhauser, G. L., Wolsey, L. A., & Fisher, M. L. (1978)**. An analysis of approximations for maximizing submodular set functions. *Mathematical Programming*, 14(1), 265-294.
+
+## 🔄 更新履歴
+
+- **v3.0** (2025-10-27): 容量重み付き中心性オプションを追加
+- **v2.5** (2025-10-20): 貪欲法と網羅的探索の実装、調和中心性の追加
+- **v2.1** (2025-10-13): 外向き近接中心性計算の修正
+- **v2.0** (2025-10-10): マルチコア並列処理の実装
+- **v1.0** (2025-10-01): 初版リリース
 
 ---
 
-**最終更新**: 2025年10月13日  
-**バージョン**: 2.1（外向き近接中心性計算の修正版）
+**作成者**: taipp-rd  
+**ライセンス**: MIT  
+**最終更新**: 2025年10月27日
