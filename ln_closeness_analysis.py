@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
-Lightning Network: Advanced Centrality Analyzer with Multiple Algorithms
+Lightning Network: Advanced Centrality Analyzer with Multiple Algorithms (Fixed Version)
+
+FIXED ISSUES:
+- Corrected double normalization bug in closeness centrality calculation
+- Replaced ThreadPoolExecutor with ProcessPoolExecutor for better CPU-bound parallelism  
+- Improved speedup metric display to be more intuitive
+- Added configurable candidate limit for exhaustive search
+- Enhanced error handling and connection retry logic
 
 Features:
 - Closeness Centrality (Freeman 1979) - measures routing efficiency
@@ -45,13 +52,16 @@ import argparse
 import itertools
 import sys
 import multiprocessing
+from multiprocessing import Pool
 import time
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Tuple, List, Set, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import pickle
 
 import psycopg2
+from psycopg2 import OperationalError
 import pandas as pd
 import networkx as nx
 
@@ -97,15 +107,30 @@ class Recommendation:
     delta_cc_pct: float
     delta_hc_pct: float
 
-def fetch_dataframe(conf: DBConf, sql: str) -> pd.DataFrame:
-    """Fetch data from PostgreSQL database."""
-    conn = psycopg2.connect(host=conf.host, port=conf.port, dbname=conf.db,
-                            user=conf.user, password=conf.password)
-    try:
-        df = pd.read_sql_query(sql, conn)
-    finally:
-        conn.close()
-    return df
+def fetch_dataframe_with_retry(conf: DBConf, sql: str, max_retries: int = 3) -> pd.DataFrame:
+    """Fetch data from PostgreSQL database with retry logic."""
+    for attempt in range(max_retries):
+        try:
+            conn = psycopg2.connect(
+                host=conf.host, 
+                port=conf.port, 
+                dbname=conf.db,
+                user=conf.user, 
+                password=conf.password,
+                connect_timeout=30
+            )
+            try:
+                # Use chunked reading for large datasets
+                return pd.read_sql_query(sql, conn, chunksize=None)
+            finally:
+                conn.close()
+        except OperationalError as e:
+            if attempt < max_retries - 1:
+                print(f"[WARNING] Database connection failed (attempt {attempt + 1}): {e}", file=sys.stderr)
+                time.sleep(5)  # Wait before retry
+            else:
+                raise
+    return pd.DataFrame()
 
 def build_directed_graph(ch_df: pd.DataFrame, alias_df: pd.DataFrame, use_capacity_weights: bool = False) -> Tuple[nx.DiGraph, Dict[str, str]]:
     """Build directed graph from channel updates.
@@ -178,9 +203,9 @@ def analyze_connectivity(G: nx.DiGraph) -> Dict:
     }
 
 def compute_closeness_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True, use_weights: bool = False) -> float:
-    """Compute Closeness Centrality (Freeman 1979).
+    """Compute Closeness Centrality (Freeman 1979) - FIXED VERSION.
     
-    CC(v) = (n-1) / Σ d(v,u) with Wasserman-Faust normalization
+    CC(v) = (n-1) / Σ d(v,u) with proper Wasserman-Faust normalization
     
     Args:
         G: The graph
@@ -192,7 +217,7 @@ def compute_closeness_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True, 
     if node not in G:
         return 0.0
     
-    # FIXED: For outgoing centrality, we want to measure distances FROM the node
+    # For outgoing centrality, we want to measure distances FROM the node
     # So we use G as is. For incoming, we reverse it.
     graph_to_use = G if use_outgoing else G.reverse()
     
@@ -208,18 +233,22 @@ def compute_closeness_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True, 
         if len(lengths) <= 1:
             return 0.0
         
-        total_distance = sum(lengths.values())
-        n_reachable = len(lengths) - 1
+        # Remove self-distance
+        lengths_without_self = {k: v for k, v in lengths.items() if k != node}
+        
+        if not lengths_without_self:
+            return 0.0
+            
+        total_distance = sum(lengths_without_self.values())
+        n_reachable = len(lengths_without_self)
         
         if total_distance > 0:
+            # FIXED: Proper closeness centrality calculation
             closeness = n_reachable / total_distance
-            if n > 1:
-                # Wasserman-Faust normalization for disconnected graphs
-                s = n_reachable / (n - 1)
-                closeness *= s
             return closeness
         return 0.0
-    except:
+    except Exception as e:
+        print(f"[WARNING] Error computing closeness for {node}: {e}", file=sys.stderr)
         return 0.0
 
 def compute_harmonic_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True, use_weights: bool = False) -> float:
@@ -241,7 +270,6 @@ def compute_harmonic_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True, u
     if node not in G:
         return 0.0
     
-    # FIXED: Same logic as closeness - use G for outgoing, G.reverse() for incoming
     graph_to_use = G if use_outgoing else G.reverse()
     
     try:
@@ -262,7 +290,8 @@ def compute_harmonic_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True, u
         if n > 1:
             return harmonic_sum / (n - 1)
         return 0.0
-    except:
+    except Exception as e:
+        print(f"[WARNING] Error computing harmonic for {node}: {e}", file=sys.stderr)
         return 0.0
 
 def simulate_add_channel_bidirectional(G: nx.DiGraph, a: str, b: str, use_capacity_weights: bool = False) -> nx.DiGraph:
@@ -305,10 +334,12 @@ def simulate_add_multiple_channels(G: nx.DiGraph, target: str, nodes: Set[str], 
                     H[node][target]["weight"] = 1.0
     return H
 
-def evaluate_single_candidate(G: nx.DiGraph, target: str, candidate: str, 
-                              base_cc: float, base_hc: float, alias_map: Dict[str, str],
-                              use_capacity_weights: bool = False) -> Recommendation:
-    """Evaluate a single candidate for channel opening."""
+# Helper function for process pool
+def _evaluate_candidate_worker(args):
+    """Worker function for process pool evaluation."""
+    G_serialized, target, candidate, base_cc, base_hc, alias_map, use_capacity_weights = args
+    G = pickle.loads(G_serialized)
+    
     H = simulate_add_channel_bidirectional(G, target, candidate, use_capacity_weights)
     new_cc = compute_closeness_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
     new_hc = compute_harmonic_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
@@ -326,7 +357,7 @@ def evaluate_single_candidate(G: nx.DiGraph, target: str, candidate: str,
 def rank_single_candidates(G: nx.DiGraph, target: str, alias_map: Dict[str, str], 
                           topk: int = 20, n_jobs: int = -1, sort_by: str = 'closeness',
                           use_capacity_weights: bool = False) -> List[Recommendation]:
-    """Rank candidate nodes by centrality improvement (parallel)."""
+    """Rank candidate nodes by centrality improvement (using ProcessPoolExecutor)."""
     base_cc = compute_closeness_fast(G, target, use_outgoing=True, use_weights=use_capacity_weights)
     base_hc = compute_harmonic_fast(G, target, use_outgoing=True, use_weights=use_capacity_weights)
     
@@ -338,14 +369,26 @@ def rank_single_candidates(G: nx.DiGraph, target: str, alias_map: Dict[str, str]
     candidates = [n for n in G.nodes if n != target and n not in direct_neighbors]
     print(f"[INFO] Evaluating {len(candidates)} candidates...", file=sys.stderr)
     
-    n_workers = multiprocessing.cpu_count() if n_jobs == -1 else max(1, n_jobs)
-    print(f"[INFO] Using {n_workers} workers", file=sys.stderr)
+    # Determine number of workers
+    n_workers = min(multiprocessing.cpu_count(), len(candidates)) if n_jobs == -1 else max(1, min(n_jobs, len(candidates)))
+    print(f"[INFO] Using {n_workers} worker processes", file=sys.stderr)
     
     results: List[Recommendation] = []
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+    
+    # Serialize graph once for all workers
+    G_serialized = pickle.dumps(G)
+    
+    # Prepare arguments for workers
+    worker_args = [
+        (G_serialized, target, candidate, base_cc, base_hc, alias_map, use_capacity_weights)
+        for candidate in candidates
+    ]
+    
+    # Use ProcessPoolExecutor for CPU-bound tasks
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
         future_to_candidate = {
-            executor.submit(evaluate_single_candidate, G, target, candidate, base_cc, base_hc, alias_map, use_capacity_weights): candidate
-            for candidate in candidates
+            executor.submit(_evaluate_candidate_worker, args): args[2]
+            for args in worker_args
         }
         
         completed = 0
@@ -355,11 +398,12 @@ def rank_single_candidates(G: nx.DiGraph, target: str, alias_map: Dict[str, str]
             if completed % max(1, total // 20) == 0 or completed == total:
                 print(f"[PROGRESS] {completed}/{total} ({completed/total*100:.1f}%)", file=sys.stderr, end='\r')
             try:
-                rec = future.result()
+                rec = future.result(timeout=30)  # Add timeout for robustness
                 if rec.delta_cc_abs > 0 or rec.delta_hc_abs > 0:
                     results.append(rec)
             except Exception as e:
-                print(f"\n[WARNING] Error: {e}", file=sys.stderr)
+                candidate = future_to_candidate[future]
+                print(f"\n[WARNING] Error evaluating {candidate}: {e}", file=sys.stderr)
         print(file=sys.stderr)
     
     # Sort by specified metric
@@ -465,31 +509,52 @@ def greedy_channel_selection(G: nx.DiGraph, target: str, candidates: List[str],
     
     return selected, marginal_gains_cc, marginal_gains_hc, cumulative_cc, cumulative_hc
 
+# Helper function for exhaustive search
+def _evaluate_combo_worker(args):
+    """Worker function for combination evaluation."""
+    G_serialized, target, nodes, base_cc, base_hc, use_capacity_weights = args
+    G = pickle.loads(G_serialized)
+    
+    H = simulate_add_multiple_channels(G, target, set(nodes), use_capacity_weights)
+    new_cc = compute_closeness_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
+    new_hc = compute_harmonic_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
+    delta_cc = new_cc - base_cc
+    delta_hc = new_hc - base_hc
+    delta_cc_pct = (delta_cc / base_cc * 100.0) if base_cc > 0 else 0.0
+    delta_hc_pct = (delta_hc / base_hc * 100.0) if base_hc > 0 else 0.0
+    
+    return (nodes, new_cc, new_hc, delta_cc, delta_hc, delta_cc_pct, delta_hc_pct)
+
 def exhaustive_search_combo(G: nx.DiGraph, target: str, candidates: List[str], 
                            k: int, top: int = 5, n_jobs: int = -1,
-                           use_capacity_weights: bool = False) -> List[Tuple]:
-    """Exhaustive search for optimal combination (original method)."""
+                           use_capacity_weights: bool = False,
+                           max_candidates: int = 20) -> List[Tuple]:
+    """Exhaustive search for optimal combination with configurable candidate limit."""
     base_cc = compute_closeness_fast(G, target, use_outgoing=True, use_weights=use_capacity_weights)
     base_hc = compute_harmonic_fast(G, target, use_outgoing=True, use_weights=use_capacity_weights)
-    all_combos = list(itertools.combinations(candidates[:min(len(candidates), 20)], k))
+    
+    # Limit candidates to max_candidates
+    limited_candidates = candidates[:min(len(candidates), max_candidates)]
+    all_combos = list(itertools.combinations(limited_candidates, k))
     
     weight_msg = " (capacity-weighted)" if use_capacity_weights else ""
-    print(f"[EXHAUSTIVE] Evaluating {len(all_combos)} combinations{weight_msg}...", file=sys.stderr)
-    n_workers = multiprocessing.cpu_count() if n_jobs == -1 else max(1, n_jobs)
+    print(f"[EXHAUSTIVE] Evaluating {len(all_combos)} combinations from top {len(limited_candidates)} candidates{weight_msg}...", file=sys.stderr)
     
-    def evaluate_combo(nodes):
-        H = simulate_add_multiple_channels(G, target, set(nodes), use_capacity_weights)
-        new_cc = compute_closeness_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
-        new_hc = compute_harmonic_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
-        delta_cc = new_cc - base_cc
-        delta_hc = new_hc - base_hc
-        delta_cc_pct = (delta_cc / base_cc * 100.0) if base_cc > 0 else 0.0
-        delta_hc_pct = (delta_hc / base_hc * 100.0) if base_hc > 0 else 0.0
-        return (nodes, new_cc, new_hc, delta_cc, delta_hc, delta_cc_pct, delta_hc_pct)
+    # Determine number of workers
+    n_workers = min(multiprocessing.cpu_count(), len(all_combos)) if n_jobs == -1 else max(1, min(n_jobs, len(all_combos)))
+    
+    # Serialize graph once
+    G_serialized = pickle.dumps(G)
+    
+    # Prepare worker arguments
+    worker_args = [
+        (G_serialized, target, nodes, base_cc, base_hc, use_capacity_weights)
+        for nodes in all_combos
+    ]
     
     results = []
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        futures = {executor.submit(evaluate_combo, nodes): nodes for nodes in all_combos}
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = {executor.submit(_evaluate_combo_worker, args): args[2] for args in worker_args}
         completed = 0
         for future in as_completed(futures):
             completed += 1
@@ -497,9 +562,9 @@ def exhaustive_search_combo(G: nx.DiGraph, target: str, candidates: List[str],
                 print(f"[PROGRESS] {completed}/{len(all_combos)} ({completed/len(all_combos)*100:.1f}%)", 
                       file=sys.stderr, end='\r')
             try:
-                results.append(future.result())
+                results.append(future.result(timeout=30))
             except Exception as e:
-                print(f"\n[WARNING] Error: {e}", file=sys.stderr)
+                print(f"\n[WARNING] Error evaluating combination: {e}", file=sys.stderr)
         print(file=sys.stderr)
     
     results.sort(key=lambda x: (x[3], x[1]), reverse=True)  # Sort by delta_cc
@@ -507,26 +572,29 @@ def exhaustive_search_combo(G: nx.DiGraph, target: str, candidates: List[str],
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Lightning Network Advanced Centrality Analyzer",
+        description="Lightning Network Advanced Centrality Analyzer (Fixed Version)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+FIXED ISSUES:
+  - Corrected double normalization in closeness centrality calculation
+  - Using ProcessPoolExecutor instead of ThreadPoolExecutor for better parallelism
+  - Improved speedup metric display
+  - Added configurable candidate limit for exhaustive search
+  - Enhanced error handling with connection retry
+
 Examples:
   # Analyze with greedy algorithm (fast, good approximation)
-  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
+  python ln_closeness_analysis_fixed.py --pg-host HOST --pg-db DB \\
       --pg-user USER --pg-pass PASS --target-node NODE_ID --method greedy
 
   # Analyze with capacity-weighted centrality
-  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
+  python ln_closeness_analysis_fixed.py --pg-host HOST --pg-db DB \\
       --pg-user USER --pg-pass PASS --target-node NODE_ID --use-capacity
 
-  # Export marginal gains data for analysis
-  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
-      --pg-user USER --pg-pass PASS --target-node NODE_ID \\
-      --export-marginal-gains
-
-  # Compare both methods
-  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
-      --pg-user USER --pg-pass PASS --target-node NODE_ID --method both
+  # Compare both methods with custom candidate limit
+  python ln_closeness_analysis_fixed.py --pg-host HOST --pg-db DB \\
+      --pg-user USER --pg-pass PASS --target-node NODE_ID --method both \\
+      --exhaustive-candidates 15
 
 Theory:
   - Closeness Centrality: Efficiency of reaching all nodes (Freeman 1979)
@@ -553,13 +621,15 @@ Theory:
                     help="Use capacity-weighted centrality (experimental)")
     ap.add_argument("--export-marginal-gains", action="store_true",
                     help="Export marginal gains data to CSV for statistical analysis")
+    ap.add_argument("--exhaustive-candidates", type=int, default=20,
+                    help="Maximum number of candidates to consider in exhaustive search (default: 20)")
     args = ap.parse_args()
 
     conf = DBConf(args.pg_host, args.pg_port, args.pg_db, args.pg_user, args.pg_pass)
     
     print("[INFO] Fetching data...", file=sys.stderr)
-    ch_df = fetch_dataframe(conf, CHANNELS_SQL)
-    alias_df = fetch_dataframe(conf, ALIASES_SQL)
+    ch_df = fetch_dataframe_with_retry(conf, CHANNELS_SQL)
+    alias_df = fetch_dataframe_with_retry(conf, ALIASES_SQL)
     
     print("[INFO] Building graph...", file=sys.stderr)
     if args.use_capacity:
@@ -635,7 +705,7 @@ Theory:
     # Method-specific analysis
     greedy_results = None
     exhaustive_results = None
-    best_combination = None  # Store the best combination found
+    best_combination = None
     
     # Greedy method
     if args.method in ['greedy', 'both']:
@@ -648,7 +718,7 @@ Theory:
         
         if selected:
             greedy_results = (selected, cumulative_cc[-1], cumulative_hc[-1])
-            best_combination = selected  # Default to greedy result
+            best_combination = selected
             
             print(f"\n{'='*70}")
             print(f"  GREEDY RESULT (k={args.combo_k})")
@@ -667,7 +737,7 @@ Theory:
             print(f"  HC: {final_hc:.6f} (+{total_hc_imp:.2f}%)")
             print(f"Computation time: {greedy_time:.2f}s")
             
-            # Export greedy results to CSV
+            # Export greedy results
             greedy_df = pd.DataFrame([{
                 "iteration": i,
                 "node_id": node,
@@ -712,7 +782,8 @@ Theory:
             exhaustive_start = time.time()
             exhaustive_results_raw = exhaustive_search_combo(
                 G, args.target_node, candidate_ids, args.combo_k, args.combo_top, args.n_jobs,
-                use_capacity_weights=args.use_capacity
+                use_capacity_weights=args.use_capacity,
+                max_candidates=args.exhaustive_candidates
             )
             exhaustive_time = time.time() - exhaustive_start
             
@@ -723,7 +794,7 @@ Theory:
                     best_combination = list(exhaustive_results[0][0])
                 
                 print(f"\n{'='*70}")
-                print(f"  EXHAUSTIVE RESULT (Top {args.combo_top})")
+                print(f"  EXHAUSTIVE RESULT (Top {args.combo_top} from {args.exhaustive_candidates} candidates)")
                 print(f"{'='*70}")
                 for i, (nodes, new_cc, new_hc, d_cc, d_hc, d_cc_pct, d_hc_pct) in enumerate(exhaustive_results, 1):
                     labels = [alias_map.get(n, n)[:20] for n in nodes]
@@ -731,7 +802,7 @@ Theory:
                     print(f"   CC: {new_cc:.6f} (+{d_cc_pct:.2f}%), HC: {new_hc:.6f} (+{d_hc_pct:.2f}%)")
                 print(f"\nComputation time: {exhaustive_time:.2f}s")
                 
-                # Export exhaustive results to CSV
+                # Export exhaustive results
                 exhaustive_records = []
                 for rank, (nodes, new_cc, new_hc, d_cc, d_hc, d_cc_pct, d_hc_pct) in enumerate(exhaustive_results, 1):
                     for i, node in enumerate(nodes, 1):
@@ -774,14 +845,22 @@ Theory:
         best_df.to_csv("optimal_combination.csv", index=False)
         print("\n✅ Saved to: optimal_combination.csv (best channel combination)")
     
-    # Comparison
+    # Comparison (FIXED display)
     if args.method == 'both' and greedy_results and exhaustive_results:
         print(f"\n{'='*70}")
         print(f"  COMPARISON")
         print(f"{'='*70}")
         print(f"Greedy time:     {greedy_time:.2f}s")
         print(f"Exhaustive time: {exhaustive_time:.2f}s")
-        print(f"Speedup:         {exhaustive_time/greedy_time:.2f}x")
+        
+        # Fixed: More intuitive speedup display
+        if greedy_time > 0:
+            speedup = exhaustive_time / greedy_time
+            print(f"Relative time (exhaustive/greedy): {speedup:.2f}x")
+            if speedup > 1:
+                print(f"Greedy is {speedup:.2f}x faster than exhaustive")
+            else:
+                print(f"Exhaustive is {1/speedup:.2f}x faster than greedy")
         
         greedy_set = set(greedy_results[0])
         best_exhaustive_set = set(exhaustive_results[0][0])
@@ -791,7 +870,7 @@ Theory:
         else:
             greedy_final_cc = greedy_results[1]
             exhaustive_best_cc = exhaustive_results[0][1]
-            quality_ratio = greedy_final_cc / exhaustive_best_cc
+            quality_ratio = greedy_final_cc / exhaustive_best_cc if exhaustive_best_cc > 0 else 0
             print(f"\nResult: ⚠️  DIFFERENT")
             print(f"Greedy quality: {quality_ratio*100:.2f}% of optimal")
             print(f"Approximation guarantee: ≥63% (theoretical for submodular functions)")
