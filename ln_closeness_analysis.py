@@ -8,6 +8,7 @@ Features:
 - Greedy Algorithm (Kempe et al. 2003) - scalable channel selection
 - Exhaustive Search - optimal but computationally expensive
 - Network connectivity analysis
+- CSV export for optimal combinations
 
 ALGORITHMS:
 1. Closeness Centrality: CC(v) = (n-1) / Σ d(v,u)
@@ -570,24 +571,67 @@ Theory:
             print(f"  CC: {final_cc:.6f} (+{total_cc_imp:.2f}%)")
             print(f"  HC: {final_hc:.6f} (+{total_hc_imp:.2f}%)")
             print(f"Computation time: {greedy_time:.2f}s")
+            
+            # Export greedy results to CSV
+            greedy_df = pd.DataFrame([{
+                "iteration": i,
+                "node_id": node,
+                "alias": alias_map.get(node, node),
+                "marginal_gain_cc": gain_cc,
+                "marginal_gain_hc": gain_hc,
+                "marginal_gain_cc_pct": (gain_cc / base_cc * 100.0) if base_cc > 0 else 0.0,
+                "marginal_gain_hc_pct": (gain_hc / base_hc * 100.0) if base_hc > 0 else 0.0,
+                "cumulative_cc": cum_cc,
+                "cumulative_hc": cum_hc,
+                "cumulative_cc_improvement_pct": ((cum_cc - base_cc) / base_cc * 100.0) if base_cc > 0 else 0.0,
+                "cumulative_hc_improvement_pct": ((cum_hc - base_hc) / base_hc * 100.0) if base_hc > 0 else 0.0,
+            } for i, (node, gain_cc, gain_hc, cum_cc, cum_hc) in enumerate(
+                zip(selected, gains_cc, gains_hc, cumulative_cc[1:], cumulative_hc[1:]), 1
+            )])
+            greedy_df.to_csv("optimal_combination_greedy.csv", index=False)
+            print("✅ Saved to: optimal_combination_greedy.csv")
     
     # Exhaustive method
     if args.method in ['exhaustive', 'both']:
         if len(singles) >= args.combo_k:
             exhaustive_start = time.time()
-            exhaustive_results = exhaustive_search_combo(
+            exhaustive_results_raw = exhaustive_search_combo(
                 G, args.target_node, candidate_ids, args.combo_k, args.combo_top, args.n_jobs
             )
             exhaustive_time = time.time() - exhaustive_start
             
-            print(f"\n{'='*70}")
-            print(f"  EXHAUSTIVE RESULT (Top {args.combo_top})")
-            print(f"{'='*70}")
-            for i, (nodes, new_cc, new_hc, d_cc, d_hc, d_cc_pct, d_hc_pct) in enumerate(exhaustive_results, 1):
-                labels = [alias_map.get(n, n)[:20] for n in nodes]
-                print(f"\n#{i}: {', '.join(labels)}")
-                print(f"   CC: {new_cc:.6f} (+{d_cc_pct:.2f}%), HC: {new_hc:.6f} (+{d_hc_pct:.2f}%)")
-            print(f"\nComputation time: {exhaustive_time:.2f}s")
+            if exhaustive_results_raw:
+                exhaustive_results = exhaustive_results_raw
+                
+                print(f"\n{'='*70}")
+                print(f"  EXHAUSTIVE RESULT (Top {args.combo_top})")
+                print(f"{'='*70}")
+                for i, (nodes, new_cc, new_hc, d_cc, d_hc, d_cc_pct, d_hc_pct) in enumerate(exhaustive_results, 1):
+                    labels = [alias_map.get(n, n)[:20] for n in nodes]
+                    print(f"\n#{i}: {', '.join(labels)}")
+                    print(f"   CC: {new_cc:.6f} (+{d_cc_pct:.2f}%), HC: {new_hc:.6f} (+{d_hc_pct:.2f}%)")
+                print(f"\nComputation time: {exhaustive_time:.2f}s")
+                
+                # Export exhaustive results to CSV
+                exhaustive_records = []
+                for rank, (nodes, new_cc, new_hc, d_cc, d_hc, d_cc_pct, d_hc_pct) in enumerate(exhaustive_results, 1):
+                    for i, node in enumerate(nodes, 1):
+                        exhaustive_records.append({
+                            "rank": rank,
+                            "position": i,
+                            "node_id": node,
+                            "alias": alias_map.get(node, node),
+                            "combination_cc": new_cc,
+                            "combination_hc": new_hc,
+                            "delta_cc_abs": d_cc,
+                            "delta_hc_abs": d_hc,
+                            "delta_cc_pct": d_cc_pct,
+                            "delta_hc_pct": d_hc_pct
+                        })
+                
+                exhaustive_df = pd.DataFrame(exhaustive_records)
+                exhaustive_df.to_csv("optimal_combinations_exhaustive.csv", index=False)
+                print("✅ Saved to: optimal_combinations_exhaustive.csv")
     
     # Comparison
     if args.method == 'both' and greedy_results and exhaustive_results:
