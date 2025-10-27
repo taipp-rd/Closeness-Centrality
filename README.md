@@ -143,6 +143,8 @@ Result: ✅ IDENTICAL (Greedy found optimal solution)
 ### CSVファイル出力
 
 - `centrality_recommendations.csv` - 単一チャネル推奨結果
+- `optimal_combination_greedy.csv` - 貪欲法チャネル最適化
+- `optimal_combinations_exhaustive.csv` - 網羅的探索チャネル最適化
 - `marginal_gains.csv` - 限界効用データ（統計分析用）
 
 ##  アルゴリズムの詳細
