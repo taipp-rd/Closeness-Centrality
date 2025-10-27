@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
-Lightning Network: Advanced Centrality Analyzer with Multiple Algorithms (Fixed Version)
-
-FIXED ISSUES:
-- Corrected double normalization bug in closeness centrality calculation
-- Replaced ThreadPoolExecutor with ProcessPoolExecutor for better CPU-bound parallelism  
-- Improved speedup metric display to be more intuitive
-- Added configurable candidate limit for exhaustive search
-- Enhanced error handling and connection retry logic
+Lightning Network: Advanced Centrality Analyzer with Multiple Algorithms 
 
 Features:
 - Closeness Centrality (Freeman 1979) - measures routing efficiency
