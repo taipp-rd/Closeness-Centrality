@@ -2,12 +2,12 @@
 
 Lightning Networkのノードの**近接中心性(Closeness Centrality)**と**調和中心性(Harmonic Centrality)**を分析し、最適なチャネル開設戦略を提案する高度な分析ツールです。
 
-## 🚀 主要機能
+##  主要機能
 
 ### 1. 複数の中心性指標
 - **近接中心性 (Closeness Centrality)**: ルーティング効率を測定
 - **調和中心性 (Harmonic Centrality)**: 非連結グラフでより安定した指標
-- **容量重み付き中心性**: チャネル容量を考慮した構造分析（実験的機能）
+- **容量重み付き中心性**: チャネル容量を考慮した構造分析
 
 ### 2. 最適化アルゴリズム
 - **貪欲法 (Greedy Algorithm)**: 高速で良好な近似解を提供
@@ -19,7 +19,7 @@ Lightning Networkのノードの**近接中心性(Closeness Centrality)**と**�
 - **進捗表示**: リアルタイムで処理状況を確認
 - **メモリ効率**: 大規模グラフにも対応
 
-## 📊 理論的背景
+##  理論的背景
 
 ### 近接中心性 (Freeman 1979)
 ```
@@ -44,7 +44,7 @@ weight = 1 / (1 + log(1 + capacity))
 - 大容量チャネル = 短い「効果的距離」
 - **注意**: 実際の残高分布ではなく構造的重要性を示す
 
-## 🛠 使い方
+##  使い方
 
 ### 必要な環境
 
@@ -90,7 +90,7 @@ python ln_closeness_analysis.py \
 | `--use-capacity` | False | 容量重み付き中心性を使用 |
 | `--sort-by` | closeness | ソート基準（closeness/harmonic） |
 
-## 📈 出力例
+##  出力例
 
 ### コンソール出力
 
@@ -143,10 +143,9 @@ Result: ✅ IDENTICAL (Greedy found optimal solution)
 ### CSVファイル出力
 
 - `centrality_recommendations.csv` - 単一チャネル推奨結果
-- `submodularity_violations.csv` - 劣モジュラ性違反の詳細（検証時）
 - `marginal_gains.csv` - 限界効用データ（統計分析用）
 
-## 🔬 アルゴリズムの詳細
+##  アルゴリズムの詳細
 
 ### 1. 貪欲アルゴリズム
 
@@ -182,12 +181,11 @@ weight = 1.0 / (1.0 + np.log1p(capacity))
 - 容量は支払い可能性の上限を示す構造的指標
 - 実際のルーティングでは残高分布（非公開）が重要
 
-## ⚠️ 重要な注意事項
+## 注意事項
 
 ### 1. 容量重み付き分析について
 - **容量 ≠ 実際の残高**: 容量は理論的上限であり、実際のルーティング能力とは異なります
 - **構造的重要性**: ネットワークトポロジーにおける位置の重要性を示します
-- **実運用**: プロダクション環境では確率ベースのパスファインディングを推奨
 
 ### 2. グラフの方向性（重要な修正）
 - **v2.1での修正**: 外向き近接中心性の計算が修正されました
@@ -199,7 +197,7 @@ weight = 1.0 / (1.0 + np.log1p(capacity))
 - **トポロジーのみ**: 手数料、評判、安定性は考慮されていません
 - **総合的判断**: 実際のチャネル開設には多角的な検討が必要です
 
-## 🐛 トラブルシューティング
+##  トラブルシューティング
 
 ### PowerShellでの実行
 
@@ -235,7 +233,7 @@ python -c "import multiprocessing; print(multiprocessing.cpu_count())"
 python ln_closeness_analysis.py ... --n-jobs 7  # 8コアCPUの場合
 ```
 
-## 📊 データベーススキーマ
+##  データベーススキーマ
 
 必要なテーブル構造：
 
@@ -256,24 +254,8 @@ python ln_closeness_analysis.py ... --n-jobs 7  # 8コアCPUの場合
 - `alias` (text): ノードのエイリアス
 - `timestamp` (integer): Unix timestamp
 
-## 🔄 プロジェクトに含まれるその他のツール
 
-### submodularity_test.py
-
-劣モジュラ性を検証するツール：
-
-```bash
-python submodularity_test.py \
-    --pg-host HOST --pg-port 5432 \
-    --pg-db DBNAME --pg-user USER --pg-pass PASS \
-    --target-node NODE_ID \
-    --num-tests 100 \
-    --max-set-size 5
-```
-
-劣モジュラ性が成立する場合、貪欲法の理論的保証（63%近似）が得られます。
-
-## 📚 参考文献
+##  参考文献
 
 1. **Freeman, L. C. (1979)**. Centrality in networks: I. Conceptual clarification. *Social Networks*, 1(3), 215-239.
 
@@ -289,7 +271,7 @@ python submodularity_test.py \
 
 7. **Nemhauser, G. L., Wolsey, L. A., & Fisher, M. L. (1978)**. An analysis of approximations for maximizing submodular set functions. *Mathematical Programming*, 14(1), 265-294.
 
-## 🔄 更新履歴
+## 更新履歴
 
 - **v3.0** (2025-10-27): 容量重み付き中心性オプションを追加
 - **v2.5** (2025-10-20): 貪欲法と網羅的探索の実装、調和中心性の追加
