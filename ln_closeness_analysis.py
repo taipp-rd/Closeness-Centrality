@@ -295,7 +295,7 @@ def rank_single_candidates(G: nx.DiGraph, target: str, alias_map: Dict[str, str]
     return results[:topk]
 
 def greedy_channel_selection(G: nx.DiGraph, target: str, candidates: List[str], 
-                            k: int, alias_map: Dict[str, str]) -> Tuple[List[str], List[float], List[float], List[float]]:
+                            k: int, alias_map: Dict[str, str]) -> Tuple[List[str], List[float], List[float], List[float], List[float]]:
     """
     Greedy algorithm for selecting k channels to maximize closeness centrality.
     
