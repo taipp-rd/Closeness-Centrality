@@ -7,7 +7,7 @@ Lightning Networkのノードの**近接中心性(Closeness Centrality)**と**�
 ### 1. 複数の中心性指標
 - **近接中心性 (Closeness Centrality)**: ルーティング効率を測定
 - **調和中心性 (Harmonic Centrality)**: 非連結グラフでより安定した指標
-- **容量重み付き中心性**: チャネル容量を考慮した構造分析
+- **容量重み付き中心性**: チャネル容量を考慮した構造分析（v3.1新機能）
 
 ### 2. 最適化アルゴリズム
 - **貪欲法 (Greedy Algorithm)**: 高速で良好な近似解を提供
@@ -27,6 +27,7 @@ CC(v) = (n-1) / Σ d(v,u)
 ```
 - ノードから他の全ノードへの最短経路距離の逆数
 - Lightning Networkでは支払い送信効率を表す
+- **外向き中心性**: ノードvから他のノードへの到達しやすさ
 
 ### 調和中心性 (Marchiori & Latora 2000)
 ```
@@ -36,7 +37,7 @@ HC(v) = Σ(u≠v) [1/d(v,u)] / (n-1)
 - 動的トポロジーに適している
 - 連結成分では近接中心性と高相関（ρ > 0.95）
 
-### 容量重み付き中心性（NEW - v3.0）
+### 容量重み付き中心性（v3.1実装済み）
 ```
 weight = 1 / (1 + log(1 + capacity))
 ```
@@ -63,7 +64,7 @@ python ln_closeness_analysis.py \
     --target-node 02abc123... \
     --method greedy
 
-# 容量重み付き分析（実験的）
+# 容量重み付き分析
 python ln_closeness_analysis.py \
     --pg-host localhost --pg-port 5432 \
     --pg-db lightning_network --pg-user readonly \
@@ -71,6 +72,11 @@ python ln_closeness_analysis.py \
     --target-node 02abc123... \
     --use-capacity \
     --method greedy
+
+# 限界効用データをエクスポート（統計分析用）
+python ln_closeness_analysis.py \
+    ... \
+    --export-marginal-gains
 
 # 両手法の比較
 python ln_closeness_analysis.py \
@@ -89,6 +95,7 @@ python ln_closeness_analysis.py \
 | `--method` | greedy | 最適化手法（greedy/exhaustive/both） |
 | `--use-capacity` | False | 容量重み付き中心性を使用 |
 | `--sort-by` | closeness | ソート基準（closeness/harmonic） |
+| `--export-marginal-gains` | False | 限界効用データをCSV出力 |
 
 ##  出力例
 
@@ -102,6 +109,7 @@ Strongly connected: False
 Strong components: 1523
 Largest component coverage: 89.45%
 Weak components: 12
+Mode: Capacity-weighted centrality
 
 ======================================================================
   Current Centrality Values
@@ -129,23 +137,18 @@ Final centrality:
   CC: 0.371698 (+5.01%)
   HC: 0.435433 (+5.60%)
 Computation time: 12.34s
-
-======================================================================
-  COMPARISON
-======================================================================
-Greedy time:     12.34s
-Exhaustive time: 156.78s
-Speedup:         12.7x
-
-Result: ✅ IDENTICAL (Greedy found optimal solution)
 ```
 
 ### CSVファイル出力
 
+#### 必須出力ファイル
 - `centrality_recommendations.csv` - 単一チャネル推奨結果
-- `optimal_combination_greedy.csv` - 貪欲法チャネル最適化
-- `optimal_combinations_exhaustive.csv` - 網羅的探索チャネル最適化
-- `marginal_gains.csv` - 限界効用データ（統計分析用）
+- `optimal_combination.csv` - 最適なチャネルの組み合わせ（新規追加）
+- `optimal_combination_greedy.csv` - 貪欲法による最適化結果（methodがgreedyまたはbothの場合）
+- `optimal_combinations_exhaustive.csv` - 網羅的探索による最適化結果（methodがexhaustiveまたはbothの場合）
+
+#### オプション出力ファイル
+- `marginal_gains.csv` - 限界効用データ（`--export-marginal-gains`指定時のみ）
 
 ##  アルゴリズムの詳細
 
@@ -183,16 +186,32 @@ weight = 1.0 / (1.0 + np.log1p(capacity))
 - 容量は支払い可能性の上限を示す構造的指標
 - 実際のルーティングでは残高分布（非公開）が重要
 
+### 4. 中心性の方向性（v3.1修正済み）
+
+**外向き中心性の正しい実装**:
+- **外向き（Outgoing）**: ノードから他のノードへの到達性
+  - グラフ`G`をそのまま使用
+  - Lightning Networkでの支払い送信能力を表す
+  
+- **内向き（Incoming）**: 他のノードからの到達性
+  - グラフ`G.reverse()`を使用
+  - Lightning Networkでの支払い受信能力を表す
+
+**重み付き分析での考慮**:
+- 容量重み付きの場合：`nx.single_source_dijkstra_path_length`使用
+- 重みなしの場合：`nx.single_source_shortest_path_length`（BFS）使用
+
 ## 注意事項
 
 ### 1. 容量重み付き分析について
 - **容量 ≠ 実際の残高**: 容量は理論的上限であり、実際のルーティング能力とは異なります
 - **構造的重要性**: ネットワークトポロジーにおける位置の重要性を示します
+- **柔軟な選択**: `--use-capacity`オプションで重み付きモードを切り替え可能
 
-### 2. グラフの方向性（重要な修正）
-- **v2.1での修正**: 外向き近接中心性の計算が修正されました
-- **正しい実装**: `G`（元のグラフ）を使用して外向き距離を測定
-- **以前の誤り**: `G.reverse()`を使用していた（内向き距離を測定）
+### 2. グラフの方向性（v3.1で修正済み）
+- **v3.1での修正**: 外向き近接中心性の計算が修正されました
+- **正しい実装**: 外向きでは`G`、内向きでは`G.reverse()`を使用
+- **重み付き時の処理**: 重み付き関数でも同じ方向性ルールを適用
 
 ### 3. 分析の限界
 - **スナップショット分析**: Lightning Networkは常に変化しています
@@ -256,7 +275,6 @@ python ln_closeness_analysis.py ... --n-jobs 7  # 8コアCPUの場合
 - `alias` (text): ノードのエイリアス
 - `timestamp` (integer): Unix timestamp
 
-
 ##  参考文献
 
 1. **Freeman, L. C. (1979)**. Centrality in networks: I. Conceptual clarification. *Social Networks*, 1(3), 215-239.
@@ -275,9 +293,14 @@ python ln_closeness_analysis.py ... --n-jobs 7  # 8コアCPUの場合
 
 ## 更新履歴
 
-- **v3.0** (2025-10-27): 容量重み付き中心性オプションを追加
+- **v3.1** (2025-10-27): 外向き中心性の修正、容量重み付き実装、CSV出力改善
+  - 外向き中心性の計算を修正（G.reverse()の誤使用を修正）
+  - 容量重み付き中心性を`--use-capacity`オプションで実装
+  - `marginal_gains.csv`を`--export-marginal-gains`オプション化
+  - `optimal_combination.csv`で最適な組み合わせを統一出力
+- **v3.0** (2025-10-27): 容量重み付き中心性オプションを追加（READMEのみ）
 - **v2.5** (2025-10-20): 貪欲法と網羅的探索の実装、調和中心性の追加
-- **v2.1** (2025-10-13): 外向き近接中心性計算の修正
+- **v2.1** (2025-10-13): 外向き近接中心性計算の修正（初回試行）
 - **v2.0** (2025-10-10): マルチコア並列処理の実装
 - **v1.0** (2025-10-01): 初版リリース
 
@@ -285,4 +308,4 @@ python ln_closeness_analysis.py ... --n-jobs 7  # 8コアCPUの場合
 
 **作成者**: taipp-rd  
 **ライセンス**: MIT  
-**最終更新**: 2025年10月27日
+**最終更新**: 2025年10月27日（v3.1）
