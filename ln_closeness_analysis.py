@@ -5,6 +5,7 @@ Lightning Network: Advanced Centrality Analyzer with Multiple Algorithms
 Features:
 - Closeness Centrality (Freeman 1979) - measures routing efficiency
 - Harmonic Centrality (Marchiori & Latora 2000) - handles disconnected components
+- Capacity-weighted centrality (Opsahl et al. 2010) - considers channel capacities
 - Greedy Algorithm (Kempe et al. 2003) - scalable channel selection
 - Exhaustive Search - optimal but computationally expensive
 - Network connectivity analysis
@@ -20,7 +21,12 @@ ALGORITHMS:
    - More stable for dynamic topologies
    - High correlation with CC in connected components (ρ > 0.95)
 
-3. Greedy Channel Selection:
+3. Capacity-Weighted Centrality:
+   - Weight function: w = 1 / (1 + log(1 + capacity))
+   - Large capacity channels = shorter effective distance
+   - Based on Opsahl et al. (2010) weighted network theory
+
+4. Greedy Channel Selection:
    - Iteratively selects channels with maximum marginal gain
    - O(k*n) complexity vs O(C(n,k)) for exhaustive search
    - Theoretical guarantee: (1-1/e) ≈ 63% for submodular functions
@@ -29,6 +35,7 @@ ALGORITHMS:
 References:
 - Freeman (1979): Centrality in Social Networks
 - Marchiori & Latora (2000): Harmony in the Small World
+- Opsahl et al. (2010): Node centrality in weighted networks
 - Boldi & Vigna (2014): Axioms for Centrality
 - Kempe et al. (2003): Maximizing the Spread of Influence
 - Rohrer et al. (2019): Discharged Payment Channels
@@ -41,7 +48,7 @@ import multiprocessing
 import time
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, Tuple, List, Set
+from typing import Dict, Tuple, List, Set, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import psycopg2
@@ -100,8 +107,14 @@ def fetch_dataframe(conf: DBConf, sql: str) -> pd.DataFrame:
         conn.close()
     return df
 
-def build_directed_graph(ch_df: pd.DataFrame, alias_df: pd.DataFrame) -> Tuple[nx.DiGraph, Dict[str, str]]:
-    """Build directed graph from channel updates."""
+def build_directed_graph(ch_df: pd.DataFrame, alias_df: pd.DataFrame, use_capacity_weights: bool = False) -> Tuple[nx.DiGraph, Dict[str, str]]:
+    """Build directed graph from channel updates.
+    
+    Args:
+        ch_df: Channel dataframe
+        alias_df: Alias dataframe
+        use_capacity_weights: If True, add edge weights based on channel capacity
+    """
     ch_df = ch_df.dropna(subset=["advertising_nodeid", "connecting_nodeid"])
     ch_df['capacity_sat'] = pd.to_numeric(ch_df['capacity_sat'], errors='coerce').fillna(0)
     
@@ -125,6 +138,19 @@ def build_directed_graph(ch_df: pd.DataFrame, alias_df: pd.DataFrame) -> Tuple[n
                 G[u][v]["capacity_sum_sat"] = G[u][v].get("capacity_sum_sat", 0) + cap
             else:
                 G.add_edge(u, v, multiplicity=1, capacity_sum_sat=cap)
+    
+    # Add capacity-based weights if requested
+    if use_capacity_weights:
+        print(f"[INFO] Adding capacity-based edge weights...", file=sys.stderr)
+        for u, v, data in G.edges(data=True):
+            capacity = data.get("capacity_sum_sat", 0)
+            # Weight function: w = 1 / (1 + log(1 + capacity))
+            # Large capacity -> small weight -> shorter effective distance
+            if capacity > 0:
+                weight = 1.0 / (1.0 + np.log1p(capacity))
+            else:
+                weight = 1.0  # Default weight for zero capacity
+            G[u][v]["weight"] = weight
     
     # Build alias map
     alias_map = {}
@@ -151,25 +177,44 @@ def analyze_connectivity(G: nx.DiGraph) -> Dict:
         'num_weak_components': len(weakly)
     }
 
-def compute_closeness_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True) -> float:
+def compute_closeness_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True, use_weights: bool = False) -> float:
     """Compute Closeness Centrality (Freeman 1979).
     
     CC(v) = (n-1) / Σ d(v,u) with Wasserman-Faust normalization
+    
+    Args:
+        G: The graph
+        node: Target node
+        use_outgoing: If True, compute outgoing centrality (how well node reaches others)
+                     If False, compute incoming centrality (how well others reach node)
+        use_weights: If True, use edge weights for distance calculation
     """
     if node not in G:
         return 0.0
     
-    graph_to_use = G.reverse() if use_outgoing else G
+    # FIXED: For outgoing centrality, we want to measure distances FROM the node
+    # So we use G as is. For incoming, we reverse it.
+    graph_to_use = G if use_outgoing else G.reverse()
+    
     try:
-        lengths = nx.single_source_shortest_path_length(graph_to_use, node)
+        if use_weights:
+            # Use Dijkstra's algorithm for weighted shortest paths
+            lengths = nx.single_source_dijkstra_path_length(graph_to_use, node, weight='weight')
+        else:
+            # Use BFS for unweighted shortest paths
+            lengths = nx.single_source_shortest_path_length(graph_to_use, node)
+        
         n = len(graph_to_use)
         if len(lengths) <= 1:
             return 0.0
+        
         total_distance = sum(lengths.values())
         n_reachable = len(lengths) - 1
+        
         if total_distance > 0:
             closeness = n_reachable / total_distance
             if n > 1:
+                # Wasserman-Faust normalization for disconnected graphs
                 s = n_reachable / (n - 1)
                 closeness *= s
             return closeness
@@ -177,7 +222,7 @@ def compute_closeness_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True) 
     except:
         return 0.0
 
-def compute_harmonic_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True) -> float:
+def compute_harmonic_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True, use_weights: bool = False) -> float:
     """Compute Harmonic Centrality (Marchiori & Latora 2000, Boldi & Vigna 2014).
     
     HC(v) = Σ(u≠v) [1/d(v,u)] / (n-1)
@@ -186,14 +231,25 @@ def compute_harmonic_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True) -
     - Handles disconnected graphs: 1/∞ = 0
     - More stable for dynamic topology
     - High correlation with closeness (ρ > 0.95) in connected components
+    
+    Args:
+        G: The graph
+        node: Target node
+        use_outgoing: If True, compute outgoing centrality
+        use_weights: If True, use edge weights for distance calculation
     """
     if node not in G:
         return 0.0
     
-    graph_to_use = G.reverse() if use_outgoing else G
+    # FIXED: Same logic as closeness - use G for outgoing, G.reverse() for incoming
+    graph_to_use = G if use_outgoing else G.reverse()
     
     try:
-        lengths = nx.single_source_shortest_path_length(graph_to_use, node)
+        if use_weights:
+            lengths = nx.single_source_dijkstra_path_length(graph_to_use, node, weight='weight')
+        else:
+            lengths = nx.single_source_shortest_path_length(graph_to_use, node)
+        
         n = len(graph_to_use)
         
         if len(lengths) <= 1:
@@ -209,34 +265,53 @@ def compute_harmonic_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True) -
     except:
         return 0.0
 
-def simulate_add_channel_bidirectional(G: nx.DiGraph, a: str, b: str) -> nx.DiGraph:
-    """Simulate adding a bidirectional Lightning channel."""
+def simulate_add_channel_bidirectional(G: nx.DiGraph, a: str, b: str, use_capacity_weights: bool = False) -> nx.DiGraph:
+    """Simulate adding a bidirectional Lightning channel.
+    
+    Args:
+        G: Original graph
+        a, b: Nodes to connect
+        use_capacity_weights: If True, add default weights to new edges
+    """
     H = G.copy()
     if a == b:
         return H
+    
+    # Add edges with default capacity and weight
     if not H.has_edge(a, b):
         H.add_edge(a, b, capacity_sum_sat=0)
+        if use_capacity_weights:
+            H[a][b]["weight"] = 1.0  # Default weight for new channel
+    
     if not H.has_edge(b, a):
         H.add_edge(b, a, capacity_sum_sat=0)
+        if use_capacity_weights:
+            H[b][a]["weight"] = 1.0  # Default weight for new channel
+    
     return H
 
-def simulate_add_multiple_channels(G: nx.DiGraph, target: str, nodes: Set[str]) -> nx.DiGraph:
+def simulate_add_multiple_channels(G: nx.DiGraph, target: str, nodes: Set[str], use_capacity_weights: bool = False) -> nx.DiGraph:
     """Add multiple channels at once."""
     H = G.copy()
     for node in nodes:
         if node != target:
             if not H.has_edge(target, node):
                 H.add_edge(target, node, capacity_sum_sat=0)
+                if use_capacity_weights:
+                    H[target][node]["weight"] = 1.0
             if not H.has_edge(node, target):
                 H.add_edge(node, target, capacity_sum_sat=0)
+                if use_capacity_weights:
+                    H[node][target]["weight"] = 1.0
     return H
 
 def evaluate_single_candidate(G: nx.DiGraph, target: str, candidate: str, 
-                              base_cc: float, base_hc: float, alias_map: Dict[str, str]) -> Recommendation:
+                              base_cc: float, base_hc: float, alias_map: Dict[str, str],
+                              use_capacity_weights: bool = False) -> Recommendation:
     """Evaluate a single candidate for channel opening."""
-    H = simulate_add_channel_bidirectional(G, target, candidate)
-    new_cc = compute_closeness_fast(H, target, use_outgoing=True)
-    new_hc = compute_harmonic_fast(H, target, use_outgoing=True)
+    H = simulate_add_channel_bidirectional(G, target, candidate, use_capacity_weights)
+    new_cc = compute_closeness_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
+    new_hc = compute_harmonic_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
     
     delta_cc_abs = new_cc - base_cc
     delta_hc_abs = new_hc - base_hc
@@ -249,10 +324,11 @@ def evaluate_single_candidate(G: nx.DiGraph, target: str, candidate: str,
     )
 
 def rank_single_candidates(G: nx.DiGraph, target: str, alias_map: Dict[str, str], 
-                          topk: int = 20, n_jobs: int = -1, sort_by: str = 'closeness') -> List[Recommendation]:
+                          topk: int = 20, n_jobs: int = -1, sort_by: str = 'closeness',
+                          use_capacity_weights: bool = False) -> List[Recommendation]:
     """Rank candidate nodes by centrality improvement (parallel)."""
-    base_cc = compute_closeness_fast(G, target, use_outgoing=True)
-    base_hc = compute_harmonic_fast(G, target, use_outgoing=True)
+    base_cc = compute_closeness_fast(G, target, use_outgoing=True, use_weights=use_capacity_weights)
+    base_hc = compute_harmonic_fast(G, target, use_outgoing=True, use_weights=use_capacity_weights)
     
     if target in G:
         direct_neighbors = set(G.predecessors(target)) | set(G.successors(target))
@@ -268,7 +344,7 @@ def rank_single_candidates(G: nx.DiGraph, target: str, alias_map: Dict[str, str]
     results: List[Recommendation] = []
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
         future_to_candidate = {
-            executor.submit(evaluate_single_candidate, G, target, candidate, base_cc, base_hc, alias_map): candidate
+            executor.submit(evaluate_single_candidate, G, target, candidate, base_cc, base_hc, alias_map, use_capacity_weights): candidate
             for candidate in candidates
         }
         
@@ -295,7 +371,8 @@ def rank_single_candidates(G: nx.DiGraph, target: str, alias_map: Dict[str, str]
     return results[:topk]
 
 def greedy_channel_selection(G: nx.DiGraph, target: str, candidates: List[str], 
-                            k: int, alias_map: Dict[str, str]) -> Tuple[List[str], List[float], List[float], List[float], List[float]]:
+                            k: int, alias_map: Dict[str, str],
+                            use_capacity_weights: bool = False) -> Tuple[List[str], List[float], List[float], List[float], List[float]]:
     """
     Greedy algorithm for selecting k channels to maximize closeness centrality.
     
@@ -316,14 +393,15 @@ def greedy_channel_selection(G: nx.DiGraph, target: str, candidates: List[str],
     cumulative_hc = []
     
     H = G.copy()
-    base_cc = compute_closeness_fast(H, target, use_outgoing=True)
-    base_hc = compute_harmonic_fast(H, target, use_outgoing=True)
+    base_cc = compute_closeness_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
+    base_hc = compute_harmonic_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
     current_cc = base_cc
     current_hc = base_hc
     cumulative_cc.append(current_cc)
     cumulative_hc.append(current_hc)
     
-    print(f"\n[GREEDY] Starting greedy selection (k={k})...", file=sys.stderr)
+    weight_msg = " (capacity-weighted)" if use_capacity_weights else ""
+    print(f"\n[GREEDY] Starting greedy selection (k={k}){weight_msg}...", file=sys.stderr)
     print(f"[GREEDY] Initial CC: {base_cc:.6f}, HC: {base_hc:.6f}\n", file=sys.stderr)
     
     for iteration in range(k):
@@ -341,9 +419,9 @@ def greedy_channel_selection(G: nx.DiGraph, target: str, candidates: List[str],
         
         for candidate in remaining:
             # Simulate adding this channel
-            H_temp = simulate_add_channel_bidirectional(H, target, candidate)
-            new_cc = compute_closeness_fast(H_temp, target, use_outgoing=True)
-            new_hc = compute_harmonic_fast(H_temp, target, use_outgoing=True)
+            H_temp = simulate_add_channel_bidirectional(H, target, candidate, use_capacity_weights)
+            new_cc = compute_closeness_fast(H_temp, target, use_outgoing=True, use_weights=use_capacity_weights)
+            new_hc = compute_harmonic_fast(H_temp, target, use_outgoing=True, use_weights=use_capacity_weights)
             
             # Calculate marginal gains
             marginal_cc = new_cc - current_cc
@@ -373,7 +451,7 @@ def greedy_channel_selection(G: nx.DiGraph, target: str, candidates: List[str],
         cumulative_hc.append(current_hc)
         
         # Update graph with selected channel
-        H = simulate_add_channel_bidirectional(H, target, best_node)
+        H = simulate_add_channel_bidirectional(H, target, best_node, use_capacity_weights)
         
         gain_cc_pct = (best_gain_cc / base_cc * 100.0) if base_cc > 0 else 0.0
         gain_hc_pct = (best_gain_hc / base_hc * 100.0) if base_hc > 0 else 0.0
@@ -388,19 +466,21 @@ def greedy_channel_selection(G: nx.DiGraph, target: str, candidates: List[str],
     return selected, marginal_gains_cc, marginal_gains_hc, cumulative_cc, cumulative_hc
 
 def exhaustive_search_combo(G: nx.DiGraph, target: str, candidates: List[str], 
-                           k: int, top: int = 5, n_jobs: int = -1) -> List[Tuple]:
+                           k: int, top: int = 5, n_jobs: int = -1,
+                           use_capacity_weights: bool = False) -> List[Tuple]:
     """Exhaustive search for optimal combination (original method)."""
-    base_cc = compute_closeness_fast(G, target, use_outgoing=True)
-    base_hc = compute_harmonic_fast(G, target, use_outgoing=True)
+    base_cc = compute_closeness_fast(G, target, use_outgoing=True, use_weights=use_capacity_weights)
+    base_hc = compute_harmonic_fast(G, target, use_outgoing=True, use_weights=use_capacity_weights)
     all_combos = list(itertools.combinations(candidates[:min(len(candidates), 20)], k))
     
-    print(f"[EXHAUSTIVE] Evaluating {len(all_combos)} combinations...", file=sys.stderr)
+    weight_msg = " (capacity-weighted)" if use_capacity_weights else ""
+    print(f"[EXHAUSTIVE] Evaluating {len(all_combos)} combinations{weight_msg}...", file=sys.stderr)
     n_workers = multiprocessing.cpu_count() if n_jobs == -1 else max(1, n_jobs)
     
     def evaluate_combo(nodes):
-        H = simulate_add_multiple_channels(G, target, set(nodes))
-        new_cc = compute_closeness_fast(H, target, use_outgoing=True)
-        new_hc = compute_harmonic_fast(H, target, use_outgoing=True)
+        H = simulate_add_multiple_channels(G, target, set(nodes), use_capacity_weights)
+        new_cc = compute_closeness_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
+        new_hc = compute_harmonic_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
         delta_cc = new_cc - base_cc
         delta_hc = new_hc - base_hc
         delta_cc_pct = (delta_cc / base_cc * 100.0) if base_cc > 0 else 0.0
@@ -435,21 +515,23 @@ Examples:
   python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
       --pg-user USER --pg-pass PASS --target-node NODE_ID --method greedy
 
-  # Analyze with exhaustive search (optimal but slow)
+  # Analyze with capacity-weighted centrality
   python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
-      --pg-user USER --pg-pass PASS --target-node NODE_ID --method exhaustive
+      --pg-user USER --pg-pass PASS --target-node NODE_ID --use-capacity
+
+  # Export marginal gains data for analysis
+  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
+      --pg-user USER --pg-pass PASS --target-node NODE_ID \\
+      --export-marginal-gains
 
   # Compare both methods
   python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
       --pg-user USER --pg-pass PASS --target-node NODE_ID --method both
 
-  # Sort by harmonic centrality instead of closeness
-  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
-      --pg-user USER --pg-pass PASS --target-node NODE_ID --sort-by harmonic
-
 Theory:
   - Closeness Centrality: Efficiency of reaching all nodes (Freeman 1979)
   - Harmonic Centrality: Handles disconnected graphs better (Marchiori & Latora 2000)
+  - Capacity Weighting: Structural importance based on channel sizes (Opsahl et al. 2010)
   - Greedy Algorithm: Fast approximation with theoretical guarantees (Kempe et al. 2003)
         """
     )
@@ -467,6 +549,10 @@ Theory:
                     help="Sort candidates by closeness or harmonic centrality")
     ap.add_argument("--method", choices=['greedy', 'exhaustive', 'both'], default='greedy',
                     help="Optimization method: greedy (fast), exhaustive (exact), or both (comparison)")
+    ap.add_argument("--use-capacity", action="store_true",
+                    help="Use capacity-weighted centrality (experimental)")
+    ap.add_argument("--export-marginal-gains", action="store_true",
+                    help="Export marginal gains data to CSV for statistical analysis")
     args = ap.parse_args()
 
     conf = DBConf(args.pg_host, args.pg_port, args.pg_db, args.pg_user, args.pg_pass)
@@ -476,7 +562,9 @@ Theory:
     alias_df = fetch_dataframe(conf, ALIASES_SQL)
     
     print("[INFO] Building graph...", file=sys.stderr)
-    G, alias_map = build_directed_graph(ch_df, alias_df)
+    if args.use_capacity:
+        print("[INFO] Using capacity-weighted analysis", file=sys.stderr)
+    G, alias_map = build_directed_graph(ch_df, alias_df, use_capacity_weights=args.use_capacity)
     print(f"[INFO] Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges", file=sys.stderr)
     
     # Connectivity analysis
@@ -488,13 +576,15 @@ Theory:
     print(f"Strong components: {conn_info['num_strong_components']}")
     print(f"Largest component coverage: {conn_info['strong_coverage']:.2f}%")
     print(f"Weak components: {conn_info['num_weak_components']}")
+    if args.use_capacity:
+        print("Mode: Capacity-weighted centrality")
     
     if args.target_node not in G:
         print(f"\n[ERROR] Target node not found", file=sys.stderr)
         sys.exit(1)
     
-    base_cc = compute_closeness_fast(G, args.target_node, use_outgoing=True)
-    base_hc = compute_harmonic_fast(G, args.target_node, use_outgoing=True)
+    base_cc = compute_closeness_fast(G, args.target_node, use_outgoing=True, use_weights=args.use_capacity)
+    base_hc = compute_harmonic_fast(G, args.target_node, use_outgoing=True, use_weights=args.use_capacity)
     
     print("\n" + "="*70)
     print("  Current Centrality Values")
@@ -504,7 +594,8 @@ Theory:
     print(f"Harmonic Centrality:   {base_hc:.6f}")
     
     # Rank single candidates
-    singles = rank_single_candidates(G, args.target_node, alias_map, args.topk, args.n_jobs, args.sort_by)
+    singles = rank_single_candidates(G, args.target_node, alias_map, args.topk, args.n_jobs, 
+                                    args.sort_by, use_capacity_weights=args.use_capacity)
     
     if singles:
         print(f"\n{'='*70}")
@@ -530,7 +621,8 @@ Theory:
             "rank": i, "node_id": r.node_id, "alias": r.alias,
             "new_closeness": r.new_cc, "new_harmonic": r.new_hc,
             "delta_cc_abs": r.delta_cc_abs, "delta_hc_abs": r.delta_hc_abs,
-            "delta_cc_pct": r.delta_cc_pct, "delta_hc_pct": r.delta_hc_pct
+            "delta_cc_pct": r.delta_cc_pct, "delta_hc_pct": r.delta_hc_pct,
+            "capacity_weighted": args.use_capacity
         } for i, r in enumerate(singles, 1)]).to_csv("centrality_recommendations.csv", index=False)
         print("\n✅ Saved to: centrality_recommendations.csv")
     
@@ -543,17 +635,20 @@ Theory:
     # Method-specific analysis
     greedy_results = None
     exhaustive_results = None
+    best_combination = None  # Store the best combination found
     
     # Greedy method
     if args.method in ['greedy', 'both']:
         greedy_start = time.time()
         selected, gains_cc, gains_hc, cumulative_cc, cumulative_hc = greedy_channel_selection(
-            G, args.target_node, candidate_ids, args.combo_k, alias_map
+            G, args.target_node, candidate_ids, args.combo_k, alias_map, 
+            use_capacity_weights=args.use_capacity
         )
         greedy_time = time.time() - greedy_start
         
         if selected:
             greedy_results = (selected, cumulative_cc[-1], cumulative_hc[-1])
+            best_combination = selected  # Default to greedy result
             
             print(f"\n{'='*70}")
             print(f"  GREEDY RESULT (k={args.combo_k})")
@@ -585,23 +680,47 @@ Theory:
                 "cumulative_hc": cum_hc,
                 "cumulative_cc_improvement_pct": ((cum_cc - base_cc) / base_cc * 100.0) if base_cc > 0 else 0.0,
                 "cumulative_hc_improvement_pct": ((cum_hc - base_hc) / base_hc * 100.0) if base_hc > 0 else 0.0,
+                "capacity_weighted": args.use_capacity
             } for i, (node, gain_cc, gain_hc, cum_cc, cum_hc) in enumerate(
                 zip(selected, gains_cc, gains_hc, cumulative_cc[1:], cumulative_hc[1:]), 1
             )])
             greedy_df.to_csv("optimal_combination_greedy.csv", index=False)
             print("✅ Saved to: optimal_combination_greedy.csv")
+            
+            # Export marginal gains if requested
+            if args.export_marginal_gains:
+                marginal_df = pd.DataFrame([{
+                    "iteration": i,
+                    "node_id": node,
+                    "alias": alias_map.get(node, node),
+                    "marginal_gain_cc": gain_cc,
+                    "marginal_gain_hc": gain_hc,
+                    "base_cc": base_cc,
+                    "base_hc": base_hc,
+                    "cumulative_cc": cum_cc,
+                    "cumulative_hc": cum_hc,
+                    "capacity_weighted": args.use_capacity
+                } for i, (node, gain_cc, gain_hc, cum_cc, cum_hc) in enumerate(
+                    zip(selected, gains_cc, gains_hc, cumulative_cc[1:], cumulative_hc[1:]), 1
+                )])
+                marginal_df.to_csv("marginal_gains.csv", index=False)
+                print("✅ Saved to: marginal_gains.csv (statistical analysis data)")
     
     # Exhaustive method
     if args.method in ['exhaustive', 'both']:
         if len(singles) >= args.combo_k:
             exhaustive_start = time.time()
             exhaustive_results_raw = exhaustive_search_combo(
-                G, args.target_node, candidate_ids, args.combo_k, args.combo_top, args.n_jobs
+                G, args.target_node, candidate_ids, args.combo_k, args.combo_top, args.n_jobs,
+                use_capacity_weights=args.use_capacity
             )
             exhaustive_time = time.time() - exhaustive_start
             
             if exhaustive_results_raw:
                 exhaustive_results = exhaustive_results_raw
+                # Update best combination if exhaustive found better result
+                if exhaustive_results:
+                    best_combination = list(exhaustive_results[0][0])
                 
                 print(f"\n{'='*70}")
                 print(f"  EXHAUSTIVE RESULT (Top {args.combo_top})")
@@ -626,12 +745,34 @@ Theory:
                             "delta_cc_abs": d_cc,
                             "delta_hc_abs": d_hc,
                             "delta_cc_pct": d_cc_pct,
-                            "delta_hc_pct": d_hc_pct
+                            "delta_hc_pct": d_hc_pct,
+                            "capacity_weighted": args.use_capacity
                         })
                 
                 exhaustive_df = pd.DataFrame(exhaustive_records)
                 exhaustive_df.to_csv("optimal_combinations_exhaustive.csv", index=False)
                 print("✅ Saved to: optimal_combinations_exhaustive.csv")
+    
+    # Save the best combination found
+    if best_combination:
+        # Compute final metrics for the best combination
+        H_best = simulate_add_multiple_channels(G, args.target_node, set(best_combination), args.use_capacity)
+        best_cc = compute_closeness_fast(H_best, args.target_node, use_outgoing=True, use_weights=args.use_capacity)
+        best_hc = compute_harmonic_fast(H_best, args.target_node, use_outgoing=True, use_weights=args.use_capacity)
+        
+        best_df = pd.DataFrame([{
+            "position": i,
+            "node_id": node,
+            "alias": alias_map.get(node, node),
+            "final_cc": best_cc,
+            "final_hc": best_hc,
+            "improvement_cc_pct": ((best_cc - base_cc) / base_cc * 100.0) if base_cc > 0 else 0.0,
+            "improvement_hc_pct": ((best_hc - base_hc) / base_hc * 100.0) if base_hc > 0 else 0.0,
+            "capacity_weighted": args.use_capacity,
+            "method": "greedy" if args.method == "greedy" else "best_found"
+        } for i, node in enumerate(best_combination, 1)])
+        best_df.to_csv("optimal_combination.csv", index=False)
+        print("\n✅ Saved to: optimal_combination.csv (best channel combination)")
     
     # Comparison
     if args.method == 'both' and greedy_results and exhaustive_results:
