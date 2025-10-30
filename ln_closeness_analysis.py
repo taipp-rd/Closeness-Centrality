@@ -290,42 +290,64 @@ def compute_harmonic_fast(G: nx.DiGraph, node: str, use_outgoing: bool = True, u
 def simulate_add_channel_bidirectional(G: nx.DiGraph, a: str, b: str, use_capacity_weights: bool = False) -> nx.DiGraph:
     """Simulate adding a bidirectional Lightning channel.
     
+    OPTIMIZED: Returns the original graph with temporary edges added.
+    The caller must restore the graph afterwards.
+    
     Args:
-        G: Original graph
+        G: Original graph (will be modified in-place)
         a, b: Nodes to connect
         use_capacity_weights: If True, add default weights to new edges
     """
-    H = G.copy()
     if a == b:
-        return H
+        return G
     
     # Add edges with default capacity and weight
-    if not H.has_edge(a, b):
-        H.add_edge(a, b, capacity_sum_sat=0)
+    added_edges = []
+    if not G.has_edge(a, b):
+        G.add_edge(a, b, capacity_sum_sat=0)
+        added_edges.append((a, b))
         if use_capacity_weights:
-            H[a][b]["weight"] = 1.0  # Default weight for new channel
+            G[a][b]["weight"] = 1.0  # Default weight for new channel
     
-    if not H.has_edge(b, a):
-        H.add_edge(b, a, capacity_sum_sat=0)
+    if not G.has_edge(b, a):
+        G.add_edge(b, a, capacity_sum_sat=0)
+        added_edges.append((b, a))
         if use_capacity_weights:
-            H[b][a]["weight"] = 1.0  # Default weight for new channel
+            G[b][a]["weight"] = 1.0  # Default weight for new channel
     
-    return H
+    # Store added edges for later removal
+    G.graph['_temp_edges'] = added_edges
+    return G
+
+def restore_graph_after_simulation(G: nx.DiGraph):
+    """Remove temporary edges added during simulation."""
+    if '_temp_edges' in G.graph:
+        for u, v in G.graph['_temp_edges']:
+            if G.has_edge(u, v):
+                G.remove_edge(u, v)
+        del G.graph['_temp_edges']
 
 def simulate_add_multiple_channels(G: nx.DiGraph, target: str, nodes: Set[str], use_capacity_weights: bool = False) -> nx.DiGraph:
-    """Add multiple channels at once."""
-    H = G.copy()
+    """Add multiple channels at once.
+    
+    OPTIMIZED: Modifies graph in-place. Caller must restore.
+    """
+    added_edges = []
     for node in nodes:
         if node != target:
-            if not H.has_edge(target, node):
-                H.add_edge(target, node, capacity_sum_sat=0)
+            if not G.has_edge(target, node):
+                G.add_edge(target, node, capacity_sum_sat=0)
+                added_edges.append((target, node))
                 if use_capacity_weights:
-                    H[target][node]["weight"] = 1.0
-            if not H.has_edge(node, target):
-                H.add_edge(node, target, capacity_sum_sat=0)
+                    G[target][node]["weight"] = 1.0
+            if not G.has_edge(node, target):
+                G.add_edge(node, target, capacity_sum_sat=0)
+                added_edges.append((node, target))
                 if use_capacity_weights:
-                    H[node][target]["weight"] = 1.0
-    return H
+                    G[node][target]["weight"] = 1.0
+    
+    G.graph['_temp_edges'] = added_edges
+    return G
 
 # Helper function for process pool
 def _evaluate_candidate_worker(args):
@@ -362,9 +384,21 @@ def rank_single_candidates(G: nx.DiGraph, target: str, alias_map: Dict[str, str]
     candidates = [n for n in G.nodes if n != target and n not in direct_neighbors]
     print(f"[INFO] Evaluating {len(candidates)} candidates...", file=sys.stderr)
     
-    # Determine number of workers
-    n_workers = min(multiprocessing.cpu_count(), len(candidates)) if n_jobs == -1 else max(1, min(n_jobs, len(candidates)))
+    # Determine number of workers (safe defaults for memory-constrained systems)
+    if n_jobs == -1:
+        n_workers = min(multiprocessing.cpu_count(), len(candidates), 4)
+    else:
+        n_workers = max(1, min(n_jobs, len(candidates)))
+    
+    # WARNING: For very large graphs, process pool may cause memory issues
+    # Estimate graph memory footprint
+    graph_size_mb = (G.number_of_nodes() * 100 + G.number_of_edges() * 50) / (1024 * 1024)
+    print(f"[INFO] Estimated graph memory: {graph_size_mb:.2f} MB", file=sys.stderr)
     print(f"[INFO] Using {n_workers} worker processes", file=sys.stderr)
+    
+    if graph_size_mb > 500:  # If graph is larger than 500MB
+        print(f"[WARNING] Large graph detected ({graph_size_mb:.2f} MB). Consider reducing --n-jobs or using sequential processing.", file=sys.stderr)
+        print(f"[WARNING] Process pool will serialize {n_workers}x this graph, requiring ~{graph_size_mb * n_workers:.2f} MB.", file=sys.stderr)
     
     results: List[Recommendation] = []
     
@@ -391,7 +425,7 @@ def rank_single_candidates(G: nx.DiGraph, target: str, alias_map: Dict[str, str]
             if completed % max(1, total // 20) == 0 or completed == total:
                 print(f"[PROGRESS] {completed}/{total} ({completed/total*100:.1f}%)", file=sys.stderr, end='\r')
             try:
-                rec = future.result(timeout=30)  # Add timeout for robustness
+                rec = future.result(timeout=120)  # Increased timeout for large graphs (120s)
                 if rec.delta_cc_abs > 0 or rec.delta_hc_abs > 0:
                     results.append(rec)
             except Exception as e:
@@ -455,14 +489,17 @@ def greedy_channel_selection(G: nx.DiGraph, target: str, candidates: List[str],
         start_time = time.time()
         
         for candidate in remaining:
-            # Simulate adding this channel
-            H_temp = simulate_add_channel_bidirectional(H, target, candidate, use_capacity_weights)
-            new_cc = compute_closeness_fast(H_temp, target, use_outgoing=True, use_weights=use_capacity_weights)
-            new_hc = compute_harmonic_fast(H_temp, target, use_outgoing=True, use_weights=use_capacity_weights)
+            # Simulate adding this channel (in-place modification)
+            simulate_add_channel_bidirectional(H, target, candidate, use_capacity_weights)
+            new_cc = compute_closeness_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
+            new_hc = compute_harmonic_fast(H, target, use_outgoing=True, use_weights=use_capacity_weights)
             
             # Calculate marginal gains
             marginal_cc = new_cc - current_cc
             marginal_hc = new_hc - current_hc
+            
+            # Restore graph to original state (after calculating metrics)
+            restore_graph_after_simulation(H)
             
             # Select based on closeness improvement (primary metric)
             if marginal_cc > best_gain_cc:
@@ -533,8 +570,16 @@ def exhaustive_search_combo(G: nx.DiGraph, target: str, candidates: List[str],
     weight_msg = " (capacity-weighted)" if use_capacity_weights else ""
     print(f"[EXHAUSTIVE] Evaluating {len(all_combos)} combinations from top {len(limited_candidates)} candidates{weight_msg}...", file=sys.stderr)
     
-    # Determine number of workers
-    n_workers = min(multiprocessing.cpu_count(), len(all_combos)) if n_jobs == -1 else max(1, min(n_jobs, len(all_combos)))
+    # Determine number of workers (safe defaults for memory-constrained systems)
+    if n_jobs == -1:
+        n_workers = min(multiprocessing.cpu_count(), len(all_combos), 4)
+    else:
+        n_workers = max(1, min(n_jobs, len(all_combos)))
+    
+    # Memory warning for large graphs
+    graph_size_mb = (G.number_of_nodes() * 100 + G.number_of_edges() * 50) / (1024 * 1024)
+    if graph_size_mb > 500:
+        print(f"[WARNING] Large graph ({graph_size_mb:.2f} MB). Serialization to {n_workers} processes requires ~{graph_size_mb * n_workers:.2f} MB.", file=sys.stderr)
     
     # Serialize graph once
     G_serialized = pickle.dumps(G)
@@ -555,7 +600,7 @@ def exhaustive_search_combo(G: nx.DiGraph, target: str, candidates: List[str],
                 print(f"[PROGRESS] {completed}/{len(all_combos)} ({completed/len(all_combos)*100:.1f}%)", 
                       file=sys.stderr, end='\r')
             try:
-                results.append(future.result(timeout=30))
+                results.append(future.result(timeout=120))  # Increased timeout for robustness
             except Exception as e:
                 print(f"\n[WARNING] Error evaluating combination: {e}", file=sys.stderr)
         print(file=sys.stderr)
@@ -577,17 +622,21 @@ FIXED ISSUES:
 
 Examples:
   # Analyze with greedy algorithm (fast, good approximation)
-  python ln_closeness_analysis_fixed.py --pg-host HOST --pg-db DB \\
+  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
       --pg-user USER --pg-pass PASS --target-node NODE_ID --method greedy
 
   # Analyze with capacity-weighted centrality
-  python ln_closeness_analysis_fixed.py --pg-host HOST --pg-db DB \\
+  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
       --pg-user USER --pg-pass PASS --target-node NODE_ID --use-capacity
 
   # Compare both methods with custom candidate limit
-  python ln_closeness_analysis_fixed.py --pg-host HOST --pg-db DB \\
+  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
       --pg-user USER --pg-pass PASS --target-node NODE_ID --method both \\
       --exhaustive-candidates 15
+
+  # Run with explicit parallel jobs (recommended: 3 for memory safety)
+  python ln_closeness_analysis.py --pg-host HOST --pg-db DB \\
+      --pg-user USER --pg-pass PASS --target-node NODE_ID --n-jobs 3
 
 Theory:
   - Closeness Centrality: Efficiency of reaching all nodes (Freeman 1979)
@@ -605,7 +654,7 @@ Theory:
     ap.add_argument("--topk", type=int, default=20, help="Top-K single-node recommendations")
     ap.add_argument("--combo-k", type=int, default=3, help="Number of channels to select")
     ap.add_argument("--combo-top", type=int, default=5, help="Number of top combos to output")
-    ap.add_argument("--n-jobs", type=int, default=-1, help="Number of parallel workers")
+    ap.add_argument("--n-jobs", type=int, default=3, help="Number of parallel workers (default: 3)")
     ap.add_argument("--sort-by", choices=['closeness', 'harmonic'], default='closeness',
                     help="Sort candidates by closeness or harmonic centrality")
     ap.add_argument("--method", choices=['greedy', 'exhaustive', 'both'], default='greedy',
